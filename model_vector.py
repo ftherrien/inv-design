@@ -110,6 +110,7 @@ class CrystalGraphConvNet(nn.Module):
         self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len,
                                     nbr_fea_len=nbr_fea_len)
                                     for _ in range(n_conv)])
+        self.smart_pooling = nn.Linear(3, 1)
         self.conv_to_fc = nn.Linear(atom_fea_len, h_fea_len)
         self.conv_to_fc_softplus = nn.Softplus()
         if n_h > 1:
@@ -153,7 +154,9 @@ class CrystalGraphConvNet(nn.Module):
         
         for conv_func in self.convs:
             atom_fea = conv_func(atom_fea, adj, nbr_fea)
-        crys_fea = torch.mean(atom_fea,1)
+        crys_fea = torch.mean(atom_fea,1) # Pooling: N0, N, F -> N0, F
+        # crys_fea = torch.cat([torch.mean(atom_fea,1,keepdim=True), torch.min(atom_fea,1,keepdim=True)[0], torch.max(atom_fea,1,keepdim=True)[0]], dim=1)
+        # crys_fea = self.smart_pooling(crys_fea.transpose(1,2)).squeeze() # Pooling: N0, N, F -> N0, F, N -> Linear(N,1) -> N0, F
         crys_fea = self.conv_to_fc(self.conv_to_fc_softplus(crys_fea))
         crys_fea = self.conv_to_fc_softplus(crys_fea)
         if self.classification:
