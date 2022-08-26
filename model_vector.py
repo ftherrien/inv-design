@@ -7,7 +7,7 @@ class ConvLayer(nn.Module):
     """
     Convolutional operation on graphs
     """
-    def __init__(self, atom_fea_len, nbr_fea_len):
+    def __init__(self, atom_fea_len):
         """
         Initialize ConvLayer.
 
@@ -16,21 +16,16 @@ class ConvLayer(nn.Module):
 
         atom_fea_len: int
           Number of atom hidden features.
-        nbr_fea_len: int
-          Number of bond features.
         """
         super(ConvLayer, self).__init__()
         self.atom_fea_len = atom_fea_len
-        self.nbr_fea_len = nbr_fea_len
-        self.fc_full = nn.Linear(2*self.atom_fea_len+self.nbr_fea_len,
-                                 2*self.atom_fea_len)
         self.sigmoid = nn.Sigmoid()
         self.softplus1 = nn.Softplus()
         self.bn1 = nn.BatchNorm1d(2*self.atom_fea_len)
         self.bn2 = nn.BatchNorm1d(self.atom_fea_len)
         self.softplus2 = nn.Softplus()
 
-    def forward(self, atom_in_fea, adj, nbr_fea):
+    def forward(self, atom_in_fea, adj):
         """
         Forward pass
 
@@ -42,8 +37,6 @@ class ConvLayer(nn.Module):
 
         atom_in_fea: Variable(torch.Tensor) shape (N0, N, atom_fea_len)
           Atom hidden features before convolution
-        nbr_fea: Variable(torch.Tensor) shape (N0, N, N, nbr_fea_len)
-          Bond features of each atom's M neighbors
         adj: torch.LongTensor shape (N0, N, N)
           adjacency matrix
 
@@ -62,10 +55,9 @@ class ConvLayer(nn.Module):
         ADJ = adj.unsqueeze(3).expand(N0, N, N, self.atom_fea_len)
         FEA = atom_in_fea.unsqueeze(2).expand(N0, N, N, self.atom_fea_len)
         atom_nbr_fea = ADJ * FEA
-        total_nbr_fea = torch.cat(
+        total_gated_fea = torch.cat(
             [FEA,
-             atom_nbr_fea, nbr_fea], dim=3)
-        total_gated_fea = self.fc_full(total_nbr_fea)
+             atom_nbr_fea], dim=3)
         total_gated_fea = self.bn1(total_gated_fea.view(
             N0, -1, self.atom_fea_len*2).permute((1,2,0))).permute((2,0,1)).view(N0, N, N, self.atom_fea_len*2)
         nbr_filter, nbr_core = total_gated_fea.chunk(2, dim=3)
@@ -82,7 +74,7 @@ class CrystalGraphConvNet(nn.Module):
     Create a crystal graph convolutional neural network for predicting total
     material properties.
     """
-    def __init__(self, orig_atom_fea_len, nbr_fea_len,
+    def __init__(self, orig_atom_fea_len,
                  atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
                  classification=False):
         """
@@ -93,8 +85,6 @@ class CrystalGraphConvNet(nn.Module):
 
         orig_atom_fea_len: int
           Number of atom features in the input.
-        nbr_fea_len: int
-          Number of bond features.
         atom_fea_len: int
           Number of hidden atom features in the convolutional layers
         n_conv: int
@@ -107,8 +97,7 @@ class CrystalGraphConvNet(nn.Module):
         super(CrystalGraphConvNet, self).__init__()
         self.classification = classification
         self.embedding = nn.Linear(orig_atom_fea_len, atom_fea_len)
-        self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len,
-                                    nbr_fea_len=nbr_fea_len)
+        self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len)
                                     for _ in range(n_conv)])
         self.smart_pooling = nn.Linear(3, 1)
         self.conv_to_fc = nn.Linear(atom_fea_len, h_fea_len)
@@ -126,7 +115,7 @@ class CrystalGraphConvNet(nn.Module):
             self.logsoftmax = nn.LogSoftmax(dim=1)
             self.dropout = nn.Dropout()
 
-    def forward(self, atom_fea, nbr_fea, adj):
+    def forward(self, atom_fea, adj):
         """
         Forward pass
 
@@ -138,8 +127,6 @@ class CrystalGraphConvNet(nn.Module):
 
         atom_fea: Variable(torch.Tensor) shape (N0, N, orig_atom_fea_len)
           Atom features from atom type
-        nbr_fea: Variable(torch.Tensor) shape (N0, N, N, nbr_fea_len)
-          Bond features of each atom's N neighbors
         adj: torch.LongTensor shape (N0, N, N)
           adjacency matrix
 
@@ -153,7 +140,7 @@ class CrystalGraphConvNet(nn.Module):
         atom_fea = self.embedding(atom_fea)
         
         for conv_func in self.convs:
-            atom_fea = conv_func(atom_fea, adj, nbr_fea)
+            atom_fea = conv_func(atom_fea, adj)
         crys_fea = torch.mean(atom_fea,1) # Pooling: N0, N, F -> N0, F
         # crys_fea = torch.cat([torch.mean(atom_fea,1,keepdim=True), torch.min(atom_fea,1,keepdim=True)[0], torch.max(atom_fea,1,keepdim=True)[0]], dim=1)
         # crys_fea = self.smart_pooling(crys_fea.transpose(1,2)).squeeze() # Pooling: N0, N, F -> N0, F, N -> Linear(N,1) -> N0, F

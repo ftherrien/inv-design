@@ -31,8 +31,80 @@ nbr_fea_len = 4
 learning_rate = 0.001
 max_size = 10
 use_pretrained = True
+sig_strength = 1
+target_value = 2.5
+qmid = 230
+n_iter = 100
 
 # ==================================
+
+def to_model_inputs(adj_vec, fea_h):
+    
+    # atom_fea = sig(sig_strength*(fea_h-0.5))
+    # atom_fea = fea_h
+    
+    # atom_fea = torch.nn.functional.normalize(atom_fea,p=1, dim=2)
+
+    atom_fea = soft(sig_strength*(fea_h-0.5))
+
+    #atom_fea = fea_h
+    
+    atom_fea_ext = torch.cat([atom_fea, torch.matmul(atom_fea[0,:,:5], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]]))],dim=2)
+
+    #adj = adj_sqrt.matmul(adj_sqrt.transpose(1,2))
+
+    n_bonds = torch.sum(torch.matmul(atom_fea[0,:,:5], torch.tensor([1.0,4.0,3.0,2.0,1.0])))
+
+    adj_vec = soft0(adj_vec)*n_bonds
+    
+    adj = torch.zeros((N,N))
+    
+    adj[tidx[0],tidx[1]] = adj_vec
+
+    adj = adj + adj.transpose(0,1)
+
+    #adj = torch.diag(torch.matmul(atom_fea[0,:,:5], torch.tensor([1.0,4.0,3.0,2.0,1.0]))).matmul(soft(sig_strength*adj.unsqueeze(0)))
+    
+    adj = adj.unsqueeze(0)
+
+    return atom_fea_ext, adj
+
+def draw_mol(atom_fea_ext, adj):
+
+    idx = torch.argmax(atom_fea_ext[0,:,:5], dim=1)
+    
+    features = torch.zeros((N,5))
+    
+    for i,j in enumerate(idx):
+        features[i,j] = 1
+    
+    adj = torch.round(2*adj).squeeze()/2    
+    
+    mol = MolFromGraph(features, adj)
+    
+    img = MolToImage(mol)
+    
+    img.save("generated_mol.png")
+
+    return features, adj
+
+def start_from(data, tridx):
+    # Get to correct shape
+    atom_fea = 1*data.x[:,:orig_atom_fea_len]
+
+    atom_fea = atom_fea.unsqueeze(0)
+    
+    N = atom_fea.shape[1]
+
+    adj = torch.zeros(N,N)
+    for n,(i,j) in enumerate(data.edge_index.T):
+        adj[i,j] = data.edge_attr[n,:].matmul(torch.tensor([1,2,3,1.5]))
+
+    adj_vec = torch.zeros(N*(N-1)//2)
+    for i, t in enumerate(tridx.T):
+        adj_vec[i] = adj[t[0],t[1]]
+        
+    return atom_fea, adj_vec
 
 def MolFromGraph(features, adjacency_matrix):
 
@@ -57,11 +129,18 @@ def MolFromGraph(features, adjacency_matrix):
                 continue
 
             # add relevant bond type (there are many more of these)
-            if bond == 0:
+            if bond == 0 or bond == 0.5:
                 continue
             elif bond == 1:
                 bond_type = Chem.rdchem.BondType.SINGLE
-                mol.AddBond(node_to_idx[ix], node_to_idx[iy], bond_type)
+            elif bond == 1.5:
+                bond_type = Chem.rdchem.BondType.AROMATIC
+            elif bond == 2 or bond == 2.5:
+                bond_type = Chem.rdchem.BondType.DOUBLE
+            elif bond >= 3:
+                bond_type = Chem.rdchem.BondType.TRIPLE
+
+            mol.AddBond(node_to_idx[ix], node_to_idx[iy], bond_type)
 
     # Convert RWMol to Mol object
     mol = mol.GetMol()            
@@ -70,28 +149,24 @@ def MolFromGraph(features, adjacency_matrix):
 
 def prepare_data(data):
     # Get to correct shape
-    atom_fea = data.x[:,:orig_atom_fea_len]
-    N = len(data.x)
-    adj = torch.zeros(N,N)
-    nbr_fea = torch.zeros(N, N, nbr_fea_len)
+    atom_fea = 1*data.x[:,:orig_atom_fea_len]
+    atom_fea = torch.cat([atom_fea, torch.matmul(atom_fea[:,:5], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]))],dim=1)
+    atom_fea = atom_fea.unsqueeze(0)
+    
+    N = data.x.shape[0]
+    adj = torch.zeros(1,N,N)
     for n,(i,j) in enumerate(data.edge_index.T):
-        adj[i,j] = 1
-        adj[j,i] = 1
-        nbr_fea[i,j,:] = data.edge_attr[n,:]
-        nbr_fea[j,i,:] = data.edge_attr[n,:]
+        adj[0,i,j] = data.edge_attr[n,:].matmul(torch.tensor([1,2,3,1.5]))
+        adj[0,j,i] = data.edge_attr[n,:].matmul(torch.tensor([1,2,3,1.5]))
     
-    crystal_atom_idx = []
-    for i in range(data.num_graphs):
-        crystal_atom_idx.append(torch.where(data.batch==i)[0])
-    
-    return atom_fea, nbr_fea, adj, crystal_atom_idx
+    return atom_fea, adj
 
 def prepare_data_vector(data):
     # Get to correct shape
-    atom_fea = data.x[:,:orig_atom_fea_len]
+    atom_fea = 1*data.x[:,:orig_atom_fea_len]
 
     if orig_atom_fea_len >= 12:
-        data.x[:,5] = data.x[:,5]/9
+        atom_fea[:,5] = atom_fea[:,5]/9
     
     atom_fea = torch.cat([atom_fea, torch.matmul(atom_fea[:,:5], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]))],dim=1)
     
@@ -104,17 +179,15 @@ def prepare_data_vector(data):
         new_atom_fea[i,:len(crystal_atom_idx[-1]),:] = atom_fea[crystal_atom_idx[-1],:]
     
     adj = torch.zeros(data.num_graphs, N,N)
-    nbr_fea = torch.zeros(data.num_graphs, N, N, nbr_fea_len)
     for n,(i,j) in enumerate(data.edge_index.T):
 
         nn = data.batch[i]
         ii = i - crystal_atom_idx[nn][0]
         jj = j - crystal_atom_idx[nn][0]
         
-        adj[nn,ii,jj] = 1
-        nbr_fea[nn,ii,jj,:] = data.edge_attr[n,:]
+        adj[nn,ii,jj] = data.edge_attr[nn,:].matmul(torch.tensor([1,2,3,1.5]))
     
-    return new_atom_fea, nbr_fea, adj
+    return new_atom_fea, adj
 
 def prepare_data_from_features(features, adj):
     # Get to correct shape
@@ -125,9 +198,7 @@ def prepare_data_from_features(features, adj):
 
     adj = adj.unsqueeze(0)
     
-    nbr_fea = torch.cat([adj.unsqueeze(3), torch.zeros((1, N, N, nbr_fea_len-1))],dim=3)
-    
-    return new_atom_fea, nbr_fea, adj
+    return new_atom_fea, adj
                 
 # Set device cuda for GPU if it's available otherwise run on the CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -141,7 +212,7 @@ qm9 = datasets.QM9("qm9_small", pre_filter=keep_in)
 
 print("Size of database:", len(qm9))
 
-qm9 = qm9[torch.randperm(len(qm9))]
+# qm9 = qm9[torch.randperm(len(qm9))]
 
 print("QM9 EXAMPLE", qm9[0], qm9[0].x, qm9[0].edge_attr)
 
@@ -154,7 +225,7 @@ mean = torch.mean(qm9.data.y[:n_data,4])
 print("MEAN GAP:", mean)
 
 # Initialize network
-model = CGCNN(orig_atom_fea_len+1, nbr_fea_len,
+model = CGCNN(orig_atom_fea_len+1,
                  atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
                  classification=False).to(device)
 
@@ -176,6 +247,8 @@ else:
     plt.xlabel('Epoch')
     plt.ylabel('RMSE (eV)')
     plt.legend(loc=2)
+
+    model.train()
     
     # Train Network
     epoch_loss_train = []
@@ -204,7 +277,9 @@ else:
     
             # gradient descent or adam step
             optimizer.step()
-    
+
+        model.eval()
+            
         epoch_loss_valid.append(0)
         for batch_idx, data in enumerate(qm9_loader_valid):
             # Get data to cuda if possible
@@ -233,43 +308,43 @@ else:
 
 # Inverter -----------------------------------------------------------------------------
 
-N = 15
+model.eval()
+
+N = qm9[qmid].x.shape[0]
 
 sig = nn.Sigmoid()
 
-sig_strength = 1
+soft = nn.Softmax(dim=2)
+soft0 = nn.Softmax(dim=0)
 
 # Random Iinit
 #adj_sqrt = torch.randn((1, N, N), requires_grad=True)
-adj_vec = torch.randn((N*(N-1)//2), requires_grad=True)
-
-fea_h = torch.randn((1, N, orig_atom_fea_len), requires_grad=True)
+#adj_vec = torch.randn((N*(N-1)//2), requires_grad=True)
+#fea_h = torch.randn((1, N, orig_atom_fea_len), requires_grad=True)
 
 tidx = torch.tril_indices(row=N, col=N, offset=-1)
 
-def to_model_inputs(adj_sqrt, fea_h):
-    
-    #atom_fea = sig(sig_strength*fea_h)
-    atom_fea = fea_h
-    
-    atom_fea = torch.nn.functional.normalize(atom_fea,p=1, dim=2)
+fea_h, adj_vec = start_from(qm9[qmid], tidx)
 
-    atom_fea_ext = torch.cat([atom_fea, torch.matmul(atom_fea[0,:,:5], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]]))],dim=2)
+adj_vec.requires_grad = True
+fea_h.requires_grad = True
 
-    #adj = adj_sqrt.matmul(adj_sqrt.transpose(1,2))
 
-    adj = torch.zeros((N,N))
-    
-    adj[tidx[0],tidx[1]] = adj_vec
+print("Model estimate for random pick:", model(*prepare_data(qm9[qmid])))
 
-    adj = adj + adj.transpose(0,1)
-    
-    adj = sig(sig_strength*adj.unsqueeze(0))
-    #adj = adj.unsqueeze(0)
-    
-    nbr_fea = torch.cat([adj.unsqueeze(3), torch.zeros((1, N, N, nbr_fea_len-1))],dim=3)
+init_features, init_adj = prepare_data(qm9[qmid])
 
-    return atom_fea_ext, nbr_fea, adj
+mol = MolFromGraph(init_features[0,:,:5],init_adj.squeeze())
+
+img = MolToImage(mol)
+
+img.save("initial_mol.png")
+
+print(*prepare_data(qm9[0]))
+
+print("Model estimate for random pick after:", model(*to_model_inputs(adj_vec, fea_h)))
+
+print(*to_model_inputs(adj_vec, fea_h))
 
 for param in model.parameters():
     param.requires_grad = False
@@ -285,10 +360,11 @@ plt.ylabel('Difference (eV)')
 plt.ylim([0,5])
 
 diffs = []
-for e in range(10000):
-    score = model(*to_model_inputs(adj_vec, fea_h))
+for e in range(n_iter):
+    inputs = to_model_inputs(adj_vec, fea_h)
+    score = model(*inputs)
         
-    loss = abs(score - torch.tensor([[1.0]]))
+    loss = abs(score - torch.tensor([[target_value]]))
     diffs.append(float(loss)) 
     
     # backward
@@ -304,33 +380,22 @@ for e in range(10000):
     if e%1000 == 0:
         plt.plot(diffs,'b')
         plt.pause(0.1)
+        draw_mol(*inputs)
 
 plt.ioff()
         
-atom_fea_ext, _, adj = to_model_inputs(adj_vec, fea_h)
+atom_fea_ext, adj = to_model_inputs(adj_vec, fea_h)
 
 print(atom_fea_ext, adj)
 
 print("Final value:", model(*to_model_inputs(adj_vec, fea_h)))
 
-idx = torch.argmax(atom_fea_ext[0,:,:5], dim=1)
-
-features = torch.zeros((N,5))
-
-for i,j in enumerate(idx):
-    features[i,j] = 1
-
-adj = torch.round(adj).squeeze()
-
-print(features, adj)
+features, adj = draw_mol(atom_fea_ext, adj)
 
 print("Final value after rounding:", model(*prepare_data_from_features(features, adj)))
 
-mol = MolFromGraph(features, adj)
-
-img = MolToImage(mol)
-
-img.save("generated_mol.png")
+print(features, adj)
+print(init_features, init_adj)
 
 plt.figure()
 
@@ -339,5 +404,32 @@ plt.plot(data_train.y[:,4], model(*prepare_data_vector(data_train)).detach().num
 
 data_valid = next(iter(DataLoader(qm9[n_data:n_data + n_data//10], batch_size = n_data//10, shuffle = False)))
 plt.plot(data_valid.y[:,4], model(*prepare_data_vector(data_valid)).detach().numpy(),".")
+
+data_all = next(iter(DataLoader(qm9, batch_size = len(qm9)//2, shuffle = False)))
+out = model(*prepare_data_vector(data_all)).detach().numpy()
+
+feas, adjs = prepare_data_vector(data_all)
+
+batchone = iter(DataLoader(qm9, batch_size = 1, shuffle = False))
+
+maxqm = 0
+for i in range(len(qm9)):
+    val = float(model(*prepare_data(qm9[i])))
+    print(*prepare_data(qm9[i]))
+    batch = next(batchone)
+    altval = float(model(*prepare_data_vector(batch)))
+    print("ONE DIM")
+    print(*prepare_data_vector(batch))
+    print("MULTI DIM")
+    print(feas[i], adjs[i])
+    altval2 = float(model(feas[i:i+1], adjs[i:i+1]))
+    print(i, val, qm9[i].y[0,4], out[i], data_all.y[i,4], altval, altval2)
+    if val >= maxqm:
+        maxqm = val
+        maxid = i
+
+    break
+
+print(maxid, maxqm)
 
 plt.show()
