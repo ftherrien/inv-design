@@ -5,6 +5,7 @@ from torch import optim, nn  # For optimizers like SGD, Adam, etc.
 from tqdm import tqdm  # For nice progress bar!
 # from torch.utils.data import DataLoader
 import numpy as np
+import pickle
 
 # From Alex
 from torch_geometric import datasets
@@ -24,17 +25,23 @@ import time
 ## HYPERPARAMETERS =================
 
 n_data = 690
-num_epochs = 1000
+num_epochs = 500
 batch_size = 230
 orig_atom_fea_len = 5
 nbr_fea_len = 4
-learning_rate = 0.001
+learning_rate = 0.01
 max_size = 10
 use_pretrained = True
-sig_strength = 1
-target_value = 2.5
-qmid = 230
-n_iter = 100
+random_split = True
+sig_strength = 3 #7
+target_value = 5
+from_random = True
+qmid = 34 #14 #541
+n_iter = 15000
+inv_r = 0.1
+n_onehot = 5
+l=0.3
+l2=0.3
 
 # ==================================
 
@@ -49,36 +56,48 @@ def to_model_inputs(adj_vec, fea_h):
 
     #atom_fea = fea_h
     
-    atom_fea_ext = torch.cat([atom_fea, torch.matmul(atom_fea[0,:,:5], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]]))],dim=2)
+    atom_fea_ext = torch.cat([atom_fea, torch.matmul(atom_fea[0,:,:n_onehot], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]]))],dim=2)
 
     #adj = adj_sqrt.matmul(adj_sqrt.transpose(1,2))
 
-    n_bonds = torch.sum(torch.matmul(atom_fea[0,:,:5], torch.tensor([1.0,4.0,3.0,2.0,1.0])))
-
-    adj_vec = soft0(adj_vec)*n_bonds
+    bonds_per_atom = torch.matmul(atom_fea[0,:,:n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0]))
+    
+    n_bonds = torch.sum(bonds_per_atom)
+    
+    adj_vec = adj_vec**2
     
     adj = torch.zeros((N,N))
     
     adj[tidx[0],tidx[1]] = adj_vec
-
+    
     adj = adj + adj.transpose(0,1)
+    
+    constraints = torch.sum((torch.sum(adj, dim=1) - bonds_per_atom)**2)
 
-    #adj = torch.diag(torch.matmul(atom_fea[0,:,:5], torch.tensor([1.0,4.0,3.0,2.0,1.0]))).matmul(soft(sig_strength*adj.unsqueeze(0)))
+    r_features, r_adj = round_mol(atom_fea_ext, adj)
+    
+    integer = torch.sum(abs(r_adj - adj)) + torch.sum(abs(r_features - atom_fea_ext[0,:,:n_onehot+1])) 
     
     adj = adj.unsqueeze(0)
 
-    return atom_fea_ext, adj
+    return atom_fea_ext, adj, constraints, integer
 
-def draw_mol(atom_fea_ext, adj):
-
-    idx = torch.argmax(atom_fea_ext[0,:,:5], dim=1)
+def round_mol(atom_fea_ext, adj):
+    idx = torch.argmax(atom_fea_ext[0,:,:n_onehot+1], dim=1)
     
-    features = torch.zeros((N,5))
+    features = torch.zeros((N,n_onehot+1))
     
     for i,j in enumerate(idx):
         features[i,j] = 1
     
-    adj = torch.round(2*adj).squeeze()/2    
+    # adj = torch.round(2*adj).squeeze()/2 # For conjugation (1.5)
+    adj = torch.round(adj).squeeze() # No conjugation
+
+    return features, adj
+
+def draw_mol(atom_fea_ext, adj):
+
+    features, adj = round_mol(atom_fea_ext, adj)
     
     mol = MolFromGraph(features, adj)
     
@@ -89,13 +108,18 @@ def draw_mol(atom_fea_ext, adj):
     return features, adj
 
 def start_from(data, tridx):
-    # Get to correct shape
-    atom_fea = 1*data.x[:,:orig_atom_fea_len]
 
+    N = max_size
+
+    # Get to correct shape
+    atom_fea = torch.zeros(N, n_onehot+1)
+    atom_fea[:data.x.shape[0],:n_onehot] = 1*data.x[:,:n_onehot]
+    atom_fea[data.x.shape[0]:, n_onehot] = 1
+    
     atom_fea = atom_fea.unsqueeze(0)
     
-    N = atom_fea.shape[1]
-
+    #N = atom_fea.shape[1]
+    
     adj = torch.zeros(N,N)
     for n,(i,j) in enumerate(data.edge_index.T):
         adj[i,j] = data.edge_attr[n,:].matmul(torch.tensor([1,2,3,1.5]))
@@ -103,6 +127,8 @@ def start_from(data, tridx):
     adj_vec = torch.zeros(N*(N-1)//2)
     for i, t in enumerate(tridx.T):
         adj_vec[i] = adj[t[0],t[1]]
+        
+    adj_vec = torch.sqrt(adj_vec)
         
     return atom_fea, adj_vec
 
@@ -116,9 +142,13 @@ def MolFromGraph(features, adjacency_matrix):
     # add atoms to mol and keep track of index
     node_to_idx = {}
     for i in range(len(features)):
-        a = Chem.Atom(atoms[(features[i,:]==1).numpy()][0])
-        molIdx = mol.AddAtom(a)
-        node_to_idx[i] = molIdx
+        atom_type = atoms[(features[i,:n_onehot]==1).numpy()]
+        if len(atom_type) > 0:
+            a = Chem.Atom(atom_type[0])
+            molIdx = mol.AddAtom(a)
+            node_to_idx[i] = molIdx
+        else:
+            node_to_idx[i] = None
 
     # add bonds between adjacent atoms
     for ix, row in enumerate(adjacency_matrix):
@@ -140,7 +170,8 @@ def MolFromGraph(features, adjacency_matrix):
             elif bond >= 3:
                 bond_type = Chem.rdchem.BondType.TRIPLE
 
-            mol.AddBond(node_to_idx[ix], node_to_idx[iy], bond_type)
+            if node_to_idx[ix] is not None and node_to_idx[iy] is not None:
+                mol.AddBond(node_to_idx[ix], node_to_idx[iy], bond_type)
 
     # Convert RWMol to Mol object
     mol = mol.GetMol()            
@@ -149,11 +180,16 @@ def MolFromGraph(features, adjacency_matrix):
 
 def prepare_data(data):
     # Get to correct shape
-    atom_fea = 1*data.x[:,:orig_atom_fea_len]
-    atom_fea = torch.cat([atom_fea, torch.matmul(atom_fea[:,:5], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]))],dim=1)
+
+    N = max_size
+
+    atom_fea = torch.zeros(N, n_onehot+1)
+    atom_fea[:data.x.shape[0],:n_onehot] = 1*data.x[:,:n_onehot]
+    atom_fea[data.x.shape[0]:, n_onehot] = 1
+    atom_fea = torch.cat([atom_fea, torch.matmul(atom_fea[:,:n_onehot], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]))],dim=1)
     atom_fea = atom_fea.unsqueeze(0)
     
-    N = data.x.shape[0]
+    #N = data.x.shape[0]
     adj = torch.zeros(1,N,N)
     for n,(i,j) in enumerate(data.edge_index.T):
         adj[0,i,j] = data.edge_attr[n,:].matmul(torch.tensor([1,2,3,1.5]))
@@ -163,20 +199,19 @@ def prepare_data(data):
 
 def prepare_data_vector(data):
     # Get to correct shape
-    atom_fea = 1*data.x[:,:orig_atom_fea_len]
+    atom_fea = 1*data.x[:,:n_onehot]
 
-    if orig_atom_fea_len >= 12:
-        atom_fea[:,5] = atom_fea[:,5]/9
+    atom_fea = torch.cat([atom_fea, torch.zeros(atom_fea.shape[0],1), torch.matmul(atom_fea[:,:n_onehot], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]))],dim=1)
     
-    atom_fea = torch.cat([atom_fea, torch.matmul(atom_fea[:,:5], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]))],dim=1)
-    
-    N = torch.max(torch.tensor([torch.sum(data.batch==i) for i in range(data.num_graphs)]))
+    #N = torch.max(torch.tensor([torch.sum(data.batch==i) for i in range(data.num_graphs)]))
+    N = max_size
     
     crystal_atom_idx = []
     new_atom_fea = torch.zeros(data.num_graphs, N, atom_fea.shape[1])
     for i in range(data.num_graphs):
         crystal_atom_idx.append(torch.where(data.batch==i)[0])
         new_atom_fea[i,:len(crystal_atom_idx[-1]),:] = atom_fea[crystal_atom_idx[-1],:]
+        new_atom_fea[i,len(crystal_atom_idx[-1]):,n_onehot] = 1
     
     adj = torch.zeros(data.num_graphs, N,N)
     for n,(i,j) in enumerate(data.edge_index.T):
@@ -185,8 +220,8 @@ def prepare_data_vector(data):
         ii = i - crystal_atom_idx[nn][0]
         jj = j - crystal_atom_idx[nn][0]
         
-        adj[nn,ii,jj] = data.edge_attr[nn,:].matmul(torch.tensor([1,2,3,1.5]))
-    
+        adj[nn,ii,jj] = data.edge_attr[n,:].matmul(torch.tensor([1,2,3,1.5]))
+        
     return new_atom_fea, adj
 
 def prepare_data_from_features(features, adj):
@@ -194,7 +229,7 @@ def prepare_data_from_features(features, adj):
 
     N = features.shape[0]
  
-    new_atom_fea = torch.cat([features, torch.matmul(features[:,:5], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]))],dim=1).unsqueeze(0)
+    new_atom_fea = torch.cat([features, torch.matmul(features[:,:n_onehot], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]))],dim=1).unsqueeze(0)
 
     adj = adj.unsqueeze(0)
     
@@ -203,6 +238,10 @@ def prepare_data_from_features(features, adj):
 # Set device cuda for GPU if it's available otherwise run on the CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def nudge(atom_fea, adj):
+    atom_fea = atom_fea + torch.randn(*atom_fea.shape)*0.04
+    adj = adj + torch.randn(*adj.shape)*0.04
+    return atom_fea, adj
 
 def keep_in(data):
     return len(data.x) <= max_size
@@ -212,9 +251,16 @@ qm9 = datasets.QM9("qm9_small", pre_filter=keep_in)
 
 print("Size of database:", len(qm9))
 
-# qm9 = qm9[torch.randperm(len(qm9))]
+if use_pretrained:
+    idx = pickle.load(open("qm9_order.pickle","rb"))
+else:
+    if random_split:
+        idx = torch.randperm(len(qm9))
+    else:
+        idx = list(range(len(qm9)))
+    pickle.dump(idx, open("qm9_order.pickle","wb"))
 
-print("QM9 EXAMPLE", qm9[0], qm9[0].x, qm9[0].edge_attr)
+qm9 = qm9[idx]
 
 qm9_loader_train = DataLoader(qm9[:n_data], batch_size = batch_size, shuffle = True)
 qm9_loader_valid = DataLoader(qm9[n_data:n_data + n_data//10], batch_size = batch_size, shuffle = True)
@@ -222,10 +268,8 @@ qm9_loader_valid = DataLoader(qm9[n_data:n_data + n_data//10], batch_size = batc
 std = torch.std(qm9.data.y[:n_data,4])
 mean = torch.mean(qm9.data.y[:n_data,4])
 
-print("MEAN GAP:", mean)
-
 # Initialize network
-model = CGCNN(orig_atom_fea_len+1,
+model = CGCNN(n_onehot+2,
                  atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
                  classification=False).to(device)
 
@@ -233,41 +277,49 @@ if use_pretrained:
     model.load_state_dict(torch.load('model_weights.pth'))
 else:
     # Loss and optimizer
-    criterion = nn.L1Loss()
+    criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=20)
     
     # Initialize plot
     plt.ion()
-    plt.figure()
-    plt.axhline(std, color = 'k', label = 'STD')
-    plt.plot([],'b',label = 'Train')
-    plt.plot([],'r',label = 'Validation')
-    plt.yscale("log")
-    plt.xlabel('Epoch')
-    plt.ylabel('RMSE (eV)')
-    plt.legend(loc=2)
-
-    model.train()
+    fig = plt.figure()
+    ax1 = fig.add_subplot(1,2,1)
+    ax2 = fig.add_subplot(1,2,2)
+    ax1.axhline(std, color = 'k', label = 'STD')
+    ax1.plot([],'b',label = 'Train')
+    ax1.plot([],'r',label = 'Validation')
+    ax1.set_yscale("log")
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('RMSE (eV)')
+    ax1.legend(loc=2)
     
     # Train Network
     epoch_loss_train = []
     epoch_loss_valid = []
     for epoch in range(num_epochs):
+
+        model.train()
+        
         epoch_loss_train.append(0)
+        epoch_scores = []
+        epoch_targets = []
         for batch_idx, data in enumerate(qm9_loader_train):
             # Get data to cuda if possible
             data = data.to(device=device)
-            
     
             inputs = prepare_data_vector(data)
-    
+
+            inputs = nudge(*inputs) # Make the model more tolerent of non integers
             
             # forward
             scores = model(*inputs).squeeze()
+            target = data.y[:,3]-data.y[:,2]
+
+            epoch_scores.append(scores)
+            epoch_targets.append(target)
             
-         
-            loss = criterion(scores, data.y[:,3]-data.y[:,2])
+            loss = criterion(scores, target)
             epoch_loss_train[-1] += float(loss)
     
                    
@@ -281,24 +333,37 @@ else:
         model.eval()
             
         epoch_loss_valid.append(0)
+        epoch_scores_valid = []
+        epoch_targets_valid = []
         for batch_idx, data in enumerate(qm9_loader_valid):
             # Get data to cuda if possible
             data = data.to(device=device)
-    
+            
             # forward
-            scores = model(*prepare_data_vector(data)).squeeze()
-            loss = criterion(scores, data.y[:,3]-data.y[:,2])
-    
+            scores_valid = model(*prepare_data_vector(data)).squeeze()
+            target_valid = data.y[:,3]-data.y[:,2]
+
+            epoch_scores_valid.append(scores_valid)
+            epoch_targets_valid.append(target_valid)
+            
+            loss = criterion(scores_valid, target_valid)
             epoch_loss_valid[-1] += float(loss)
             
         epoch_loss_train[-1] = epoch_loss_train[-1]/len(qm9_loader_train)
         epoch_loss_valid[-1] = epoch_loss_valid[-1]/len(qm9_loader_valid)
-        print("AVG TRAIN RMSE", epoch_loss_train[-1], "AVG VALID RMSE", epoch_loss_valid[-1])
+        print(epoch, "AVG TRAIN RMSE", float(epoch_loss_train[-1]), "AVG VALID RMSE", float(epoch_loss_valid[-1]))
         #scheduler.step(epoch_loss_train[-1])
         
         if epoch%10 == 0:
-            plt.plot(epoch_loss_train[1:],'b',label = 'Train')
-            plt.plot(epoch_loss_valid[:-1],'r',label = 'Validation')
+            ax2.clear()
+            ax1.plot(epoch_loss_train[1:],'b',label = 'Train')
+            ax1.plot(epoch_loss_valid[:-1],'r',label = 'Validation')
+            ax2.plot(torch.cat(epoch_targets), torch.cat(epoch_scores).detach().numpy(), ".")
+            ax2.plot(torch.cat(epoch_targets_valid), torch.cat(epoch_scores_valid).detach().numpy(), ".")
+            x = np.linspace(0,18,300)
+            ax2.fill_between(x, x+1, x-1, color="gray", alpha=0.1)
+            ax2.plot(x, x, color="k", alpha=0.5)
+            ax2.set_aspect("equal","box")
             plt.pause(0.1)
     
     torch.save(model.state_dict(), 'model_weights.pth')
@@ -310,92 +375,137 @@ else:
 
 model.eval()
 
-N = qm9[qmid].x.shape[0]
+# N = qm9[qmid].x.shape[0]
+N = max_size
 
 sig = nn.Sigmoid()
 
 soft = nn.Softmax(dim=2)
 soft0 = nn.Softmax(dim=0)
 
-# Random Iinit
-#adj_sqrt = torch.randn((1, N, N), requires_grad=True)
-#adj_vec = torch.randn((N*(N-1)//2), requires_grad=True)
-#fea_h = torch.randn((1, N, orig_atom_fea_len), requires_grad=True)
 
 tidx = torch.tril_indices(row=N, col=N, offset=-1)
 
 fea_h, adj_vec = start_from(qm9[qmid], tidx)
 
+if from_random:
+    adj_vec = torch.randn((N*(N-1)//2), requires_grad=True)
+    fea_h = torch.randn((1, N, n_onehot+1), requires_grad=True)
+
+print("INIT ADJ_VEC", adj_vec)
+print("INIT FEA_H", fea_h)
+
 adj_vec.requires_grad = True
 fea_h.requires_grad = True
-
 
 print("Model estimate for random pick:", model(*prepare_data(qm9[qmid])))
 
 init_features, init_adj = prepare_data(qm9[qmid])
 
-mol = MolFromGraph(init_features[0,:,:5],init_adj.squeeze())
+mol = MolFromGraph(init_features[0,:,:n_onehot],init_adj.squeeze())
 
 img = MolToImage(mol)
 
 img.save("initial_mol.png")
 
-print(*prepare_data(qm9[0]))
+print(*prepare_data(qm9[qmid]))
 
-print("Model estimate for random pick after:", model(*to_model_inputs(adj_vec, fea_h)))
+init_atom_fea_ext, init_adj, constraints, integer = to_model_inputs(adj_vec, fea_h)
 
-print(*to_model_inputs(adj_vec, fea_h))
+print("Model estimate for starting point:", model(init_atom_fea_ext, init_adj), constraints, integer)
 
 for param in model.parameters():
     param.requires_grad = False
 
-criterion = nn.MSELoss()
-optimizer = optim.SGD([adj_vec, fea_h], lr=0.1)
+# criterion = nn.MSELoss()
+#optimizer = optim.SGD([adj_vec, fea_h], lr=inv_r)
+optimizer = optim.Adam([adj_vec, fea_h], lr=inv_r)
 
 plt.ion()
 plt.figure()
 plt.plot([],'b')
+plt.yscale('log')
 plt.xlabel('Epoch')
 plt.ylabel('Difference (eV)')
-plt.ylim([0,5])
 
-diffs = []
+losses = []
+total_losses = []
+constraint_losses = []
+integer_losses = []
 for e in range(n_iter):
-    inputs = to_model_inputs(adj_vec, fea_h)
-    score = model(*inputs)
-        
+    atom_fea_ext, adj, constraints, integer = to_model_inputs(adj_vec, fea_h)
+
+    # r_features, r_adj = round_mol(atom_fea_ext, adj)
+
+    # atom_fea_ext[0,:,:n_onehot+1] = r_features
+    # adj[0,:,:] = r_adj
+    
+    score = model(atom_fea_ext, adj)
+
+    #l2 = e/n_iter
+    
     loss = abs(score - torch.tensor([[target_value]]))
-    diffs.append(float(loss)) 
+    total_loss = loss + l*constraints + l2*integer
+    total_losses.append(float(total_loss))
+    losses.append(float(loss))
+    constraint_losses.append(float(constraints))
+    integer_losses.append(float(integer))
     
     # backward
     optimizer.zero_grad()
-    loss.backward()
+    total_loss.backward()
     
     # gradient descent or adam step
     optimizer.step()
 
     if e%10 == 0:
-        print(loss, score)
+        print(float(total_loss), float(loss), float(constraints), float(integer), float(score))
     
     if e%1000 == 0:
-        plt.plot(diffs,'b')
+        plt.plot(total_losses,'k')
+        plt.plot(losses,'b')
+        plt.plot(constraint_losses,"r")
+        plt.plot(integer_losses, color="orange")
         plt.pause(0.1)
-        draw_mol(*inputs)
+        draw_mol(atom_fea_ext, adj)
 
 plt.ioff()
         
-atom_fea_ext, adj = to_model_inputs(adj_vec, fea_h)
+atom_fea_ext, adj, constraints, integer = to_model_inputs(adj_vec, fea_h)
 
-print(atom_fea_ext, adj)
+print("Final value:", model(atom_fea_ext, adj))
 
-print("Final value:", model(*to_model_inputs(adj_vec, fea_h)))
+features, adj_round = draw_mol(atom_fea_ext, adj)
 
-features, adj = draw_mol(atom_fea_ext, adj)
+atom_fea_ext_r, adj_r = prepare_data_from_features(features, adj_round)
 
-print("Final value after rounding:", model(*prepare_data_from_features(features, adj)))
+print("Final value after rounding:", model(atom_fea_ext_r, adj_r))
 
-print(features, adj)
-print(init_features, init_adj)
+print("ROUNDING DIFF")
+print(atom_fea_ext - atom_fea_ext_r)
+print(adj - adj_r)
+
+print("STARTING ATOM FEA")
+print(init_atom_fea_ext)
+print("STARTING ADJ")
+print(init_adj)
+print("FINAL ADJ VEC")
+print(adj_vec)
+print("FINAL ATOM FEA")
+print(atom_fea_ext)
+print("FINAL ADJ")
+print(adj)
+print("ROUNDED FINAL ATOM FEA")
+print(features)
+print("ROUNDED FINAL ADJ")
+print(adj_round)
+
+bonds_per_atom = torch.matmul(atom_fea_ext[0,:,:n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0]))
+print("BONDS PER ATOM")
+print(bonds_per_atom)
+
+print("SUM ADJ")
+print(torch.sum(adj, dim=1))
 
 plt.figure()
 
@@ -405,31 +515,41 @@ plt.plot(data_train.y[:,4], model(*prepare_data_vector(data_train)).detach().num
 data_valid = next(iter(DataLoader(qm9[n_data:n_data + n_data//10], batch_size = n_data//10, shuffle = False)))
 plt.plot(data_valid.y[:,4], model(*prepare_data_vector(data_valid)).detach().numpy(),".")
 
-data_all = next(iter(DataLoader(qm9, batch_size = len(qm9)//2, shuffle = False)))
-out = model(*prepare_data_vector(data_all)).detach().numpy()
+ax = plt.gca()
 
-feas, adjs = prepare_data_vector(data_all)
+x = np.linspace(0,18,300)
+ax.fill_between(x, x+1, x-1, color="gray", alpha=0.1)
 
-batchone = iter(DataLoader(qm9, batch_size = 1, shuffle = False))
+plt.plot(x, x, color="k", alpha=0.5)
 
-maxqm = 0
-for i in range(len(qm9)):
-    val = float(model(*prepare_data(qm9[i])))
-    print(*prepare_data(qm9[i]))
-    batch = next(batchone)
-    altval = float(model(*prepare_data_vector(batch)))
-    print("ONE DIM")
-    print(*prepare_data_vector(batch))
-    print("MULTI DIM")
-    print(feas[i], adjs[i])
-    altval2 = float(model(feas[i:i+1], adjs[i:i+1]))
-    print(i, val, qm9[i].y[0,4], out[i], data_all.y[i,4], altval, altval2)
-    if val >= maxqm:
-        maxqm = val
-        maxid = i
+ax.set_aspect("equal","box")
 
-    break
 
-print(maxid, maxqm)
+# data_all = next(iter(DataLoader(qm9, batch_size = len(qm9)//2, shuffle = False)))
+# out = model(*prepare_data_vector(data_all)).detach().numpy()
+
+# feas, adjs = prepare_data_vector(data_all)
+
+# batchone = iter(DataLoader(qm9, batch_size = 1, shuffle = False))
+
+# maxqm = 0
+# for i in range(len(qm9)):
+#     val = float(model(*prepare_data(qm9[i])))
+#     print(*prepare_data(qm9[i]))
+#     batch = next(batchone)
+#     altval = float(model(*prepare_data_vector(batch)))
+#     print("ONE DIM")
+#     print(*prepare_data_vector(batch))
+#     print("MULTI DIM")
+#     print(feas[i], adjs[i])
+#     altval2 = float(model(feas[i:i+1], adjs[i:i+1]))
+#     print(i, val, qm9[i].y[0,4], out[i], data_all.y[i,4], altval, altval2)
+#     if val >= maxqm:
+#         maxqm = val
+#         maxid = i
+
+#     break
+
+# print(maxid, maxqm)
 
 plt.show()
