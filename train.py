@@ -21,6 +21,9 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import time
+import mdmm
+
+torch.set_printoptions(sci_mode=False)
 
 ## HYPERPARAMETERS =================
 
@@ -33,19 +36,30 @@ learning_rate = 0.01
 max_size = 10
 use_pretrained = True
 random_split = True
-sig_strength = 3 #7
-target_value = 5
+sig_strength = 10 #7
+target_value = 9
 from_random = True
-qmid = 34 #14 #541
-n_iter = 15000
-inv_r = 0.1
+qmid = 14 #14 (7.29) #541
+n_iter = 20000
+inv_r = 0.001
 n_onehot = 5
-l=0.3
-l2=0.3
+l=4
+l_fea=4
+l_adj=4
+noise_factor = 0.1
 
 # ==================================
 
-def to_model_inputs(adj_vec, fea_h):
+def smooth_round(x):
+    # return -(-60*torch.pi*x + 45*torch.sin(2*torch.pi*x) - 9*torch.sin(4*torch.pi*x) + torch.sin(6*torch.pi*x))/(60*torch.pi)
+    #return x - torch.sin(2*np.pi*x)/(2*np.pi)
+    #return (396*torch.pi*x - 225*torch.sin(2*torch.pi*x) + 45*torch.sin(4*torch.pi*x) - 5*torch.sin(6*torch.pi*x))/(300*torch.pi)
+
+    return torch.round(x) + 0.1*(x - torch.round(x))
+
+    # return x
+    
+def to_model_inputs(): #(adj_vec, fea_h):
     
     # atom_fea = sig(sig_strength*(fea_h-0.5))
     # atom_fea = fea_h
@@ -56,33 +70,34 @@ def to_model_inputs(adj_vec, fea_h):
 
     #atom_fea = fea_h
     
-    atom_fea_ext = torch.cat([atom_fea, torch.matmul(atom_fea[0,:,:n_onehot], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]]))],dim=2)
+    atom_fea_ext = torch.cat([smooth_round(atom_fea), torch.matmul(smooth_round(atom_fea[0,:,:n_onehot]), torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]]))],dim=2)
 
     #adj = adj_sqrt.matmul(adj_sqrt.transpose(1,2))
-
-    bonds_per_atom = torch.matmul(atom_fea[0,:,:n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0]))
-    
-    n_bonds = torch.sum(bonds_per_atom)
-    
-    adj_vec = adj_vec**2
     
     adj = torch.zeros((N,N))
     
-    adj[tidx[0],tidx[1]] = adj_vec
+    adj[tidx[0],tidx[1]] = adj_vec**2
     
     adj = adj + adj.transpose(0,1)
-    
-    constraints = torch.sum((torch.sum(adj, dim=1) - bonds_per_atom)**2)
 
-    r_features, r_adj = round_mol(atom_fea_ext, adj)
+    adj = smooth_round(adj)
     
-    integer = torch.sum(abs(r_adj - adj)) + torch.sum(abs(r_features - atom_fea_ext[0,:,:n_onehot+1])) 
+    r_features, r_adj = round_mol(atom_fea_ext, adj)
+
+    # bonds_per_atom = torch.matmul(atom_fea[0,:,:n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0]))
+    bonds_per_atom = torch.matmul(r_features[:,:n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0]))
+
+    constraints = torch.sum((torch.sum(adj, dim=1) - bonds_per_atom)**2)
+    
+    integer_fea = torch.sum((r_features - atom_fea_ext[0,:,:n_onehot+1])**2)
+
+    integer_adj = torch.sum((r_adj - adj)**2) 
     
     adj = adj.unsqueeze(0)
 
-    return atom_fea_ext, adj, constraints, integer
+    return atom_fea_ext, adj, constraints, integer_fea, integer_adj
 
-def round_mol(atom_fea_ext, adj):
+def round_mol(atom_fea_ext, adj, smooth=False, half=False):
     idx = torch.argmax(atom_fea_ext[0,:,:n_onehot+1], dim=1)
     
     features = torch.zeros((N,n_onehot+1))
@@ -90,8 +105,13 @@ def round_mol(atom_fea_ext, adj):
     for i,j in enumerate(idx):
         features[i,j] = 1
     
-    # adj = torch.round(2*adj).squeeze()/2 # For conjugation (1.5)
-    adj = torch.round(adj).squeeze() # No conjugation
+    if smooth:
+        adj = smooth_round(adj).squeeze()
+    else:
+        if half:
+            adj = torch.round(2*adj).squeeze()/2 # For conjugation (1.5)
+        else:
+            adj = torch.round(adj).squeeze() # No conjugation
 
     return features, adj
 
@@ -239,8 +259,8 @@ def prepare_data_from_features(features, adj):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def nudge(atom_fea, adj):
-    atom_fea = atom_fea + torch.randn(*atom_fea.shape)*0.04
-    adj = adj + torch.randn(*adj.shape)*0.04
+    atom_fea = atom_fea*(1 + torch.randn(*atom_fea.shape)*noise_factor)
+    adj = adj*(1 + torch.randn(*adj.shape)*noise_factor)
     return atom_fea, adj
 
 def keep_in(data):
@@ -383,15 +403,16 @@ sig = nn.Sigmoid()
 soft = nn.Softmax(dim=2)
 soft0 = nn.Softmax(dim=0)
 
-
 tidx = torch.tril_indices(row=N, col=N, offset=-1)
 
 fea_h, adj_vec = start_from(qm9[qmid], tidx)
 
 if from_random:
-    adj_vec = torch.randn((N*(N-1)//2), requires_grad=True)
-    fea_h = torch.randn((1, N, n_onehot+1), requires_grad=True)
+    adj_vec = torch.randn((N*(N-1)//2))
+    fea_h = torch.randn((1, N, n_onehot+1))
 
+
+    
 print("INIT ADJ_VEC", adj_vec)
 print("INIT FEA_H", fea_h)
 
@@ -410,16 +431,35 @@ img.save("initial_mol.png")
 
 print(*prepare_data(qm9[qmid]))
 
-init_atom_fea_ext, init_adj, constraints, integer = to_model_inputs(adj_vec, fea_h)
+init_atom_fea_ext, init_adj, constraints, integer_fea, integer_adj = to_model_inputs() #adj_vec, fea_h)
 
-print("Model estimate for starting point:", model(init_atom_fea_ext, init_adj), constraints, integer)
+print("Model estimate for starting point:", model(init_atom_fea_ext, init_adj), constraints, integer_fea, integer_adj)
 
 for param in model.parameters():
     param.requires_grad = False
 
 # criterion = nn.MSELoss()
-#optimizer = optim.SGD([adj_vec, fea_h], lr=inv_r)
+# optimizer = optim.SGD([adj_vec, fea_h], lr=0.001*inv_r)
 optimizer = optim.Adam([adj_vec, fea_h], lr=inv_r)
+
+def c_adj():
+    
+    return to_model_inputs()[4]
+
+def c_fea():
+
+    return to_model_inputs()[3]
+
+def c_sum():
+
+    return to_model_inputs()[2]
+    
+
+# constraint1 = mdmm.MaxConstraint(c_adj, 0.01)
+# constraint2 = mdmm.MaxConstraint(c_fea, 0.001)
+# constraint3 = mdmm.MaxConstraint(c_sum, 0.01)
+# mdmm_module = mdmm.MDMM([constraint2])
+# optimizer = mdmm_module.make_optimizer([adj_vec, fea_h], lr=inv_r)
 
 plt.ion()
 plt.figure()
@@ -431,47 +471,53 @@ plt.ylabel('Difference (eV)')
 losses = []
 total_losses = []
 constraint_losses = []
-integer_losses = []
+integer_fea_losses = []
+integer_adj_losses = []
 for e in range(n_iter):
-    atom_fea_ext, adj, constraints, integer = to_model_inputs(adj_vec, fea_h)
-
-    # r_features, r_adj = round_mol(atom_fea_ext, adj)
-
-    # atom_fea_ext[0,:,:n_onehot+1] = r_features
-    # adj[0,:,:] = r_adj
+    atom_fea_ext, adj, constraints, integer_fea, integer_adj = to_model_inputs()#(adj_vec, fea_h)
     
     score = model(atom_fea_ext, adj)
-
-    #l2 = e/n_iter
     
     loss = abs(score - torch.tensor([[target_value]]))
-    total_loss = loss + l*constraints + l2*integer
+
+    total_loss = loss + l*constraints + l_fea*integer_fea + l_adj*integer_adj
     total_losses.append(float(total_loss))
     losses.append(float(loss))
     constraint_losses.append(float(constraints))
-    integer_losses.append(float(integer))
+    integer_fea_losses.append(float(integer_fea))
+    integer_adj_losses.append(float(integer_adj))
+
     
     # backward
     optimizer.zero_grad()
     total_loss.backward()
-    
+    # mdmm_return = mdmm_module(total_loss)
+    # mdmm_return.value.backward()
+
     # gradient descent or adam step
     optimizer.step()
 
+
     if e%10 == 0:
-        print(float(total_loss), float(loss), float(constraints), float(integer), float(score))
+        print(float(total_loss), float(loss), float(constraints), float(integer_fea), float(integer_adj), float(score))
+        # print(float(constraints), torch.sum(adj, dim=1))
     
     if e%1000 == 0:
         plt.plot(total_losses,'k')
         plt.plot(losses,'b')
-        plt.plot(constraint_losses,"r")
-        plt.plot(integer_losses, color="orange")
+        plt.plot(constraint_losses,".-", color="r")
+        plt.plot(integer_fea_losses, color="orange")
+        plt.plot(integer_adj_losses, color="purple")
         plt.pause(0.1)
         draw_mol(atom_fea_ext, adj)
 
+    # if float(constraints) < 0.2:
+    #     print("BREAKING")
+    #     break
+
 plt.ioff()
         
-atom_fea_ext, adj, constraints, integer = to_model_inputs(adj_vec, fea_h)
+atom_fea_ext, adj, constraints, integer_fea, integer_adj = to_model_inputs() #adj_vec, fea_h)
 
 print("Final value:", model(atom_fea_ext, adj))
 
@@ -479,11 +525,18 @@ features, adj_round = draw_mol(atom_fea_ext, adj)
 
 atom_fea_ext_r, adj_r = prepare_data_from_features(features, adj_round)
 
+atom_fea_ext_r_2, adj_r_2 = prepare_data_from_features(*round_mol(atom_fea_ext, adj, half=True))
+
 print("Final value after rounding:", model(atom_fea_ext_r, adj_r))
+print("Final value after half:", model(atom_fea_ext_r_2, adj_r_2))
+print("Final value after rounding (adj_r):", model(atom_fea_ext, adj_r))
+print("Final value after rounding (fea_r):", model(atom_fea_ext_r, adj))
 
 print("ROUNDING DIFF")
-print(atom_fea_ext - atom_fea_ext_r)
-print(adj - adj_r)
+print(torch.max(abs(atom_fea_ext - atom_fea_ext_r)))
+print(torch.max(abs(adj - adj_r)))
+print(abs(atom_fea_ext - atom_fea_ext_r))
+print(abs(adj - adj_r))
 
 print("STARTING ATOM FEA")
 print(init_atom_fea_ext)
@@ -495,6 +548,8 @@ print("FINAL ATOM FEA")
 print(atom_fea_ext)
 print("FINAL ADJ")
 print(adj)
+print("SMOOTH FINAL ADJ")
+print(smooth_round(adj))
 print("ROUNDED FINAL ATOM FEA")
 print(features)
 print("ROUNDED FINAL ADJ")
@@ -507,13 +562,21 @@ print(bonds_per_atom)
 print("SUM ADJ")
 print(torch.sum(adj, dim=1))
 
+print("FINAL CONSTRAINT", torch.sum((torch.sum(adj, dim=1) - bonds_per_atom)**2))
+
 plt.figure()
+
+criterion = nn.MSELoss()
 
 data_train = next(iter(DataLoader(qm9[:n_data], batch_size = n_data, shuffle = False)))
 plt.plot(data_train.y[:,4], model(*prepare_data_vector(data_train)).detach().numpy(), ".")
 
+print("FINAL TRAIN RMSE", criterion(data_train.y[:,4], model(*prepare_data_vector(data_train)).squeeze()))
+
 data_valid = next(iter(DataLoader(qm9[n_data:n_data + n_data//10], batch_size = n_data//10, shuffle = False)))
 plt.plot(data_valid.y[:,4], model(*prepare_data_vector(data_valid)).detach().numpy(),".")
+
+print("FINAL TEST RMSE", criterion(data_valid.y[:,4], model(*prepare_data_vector(data_valid)).squeeze()))
 
 ax = plt.gca()
 
