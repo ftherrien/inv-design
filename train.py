@@ -17,6 +17,7 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import time
 import mdmm
+from multi_task.min_norm_solvers import MinNormSolver, gradient_normalizers
 
 torch.set_printoptions(sci_mode=False)
 
@@ -29,19 +30,22 @@ orig_atom_fea_len = 5
 nbr_fea_len = 4
 learning_rate = 0.01
 max_size = 10
-use_pretrained = False
+use_pretrained = True
 random_split = True
-sig_strength = 10 #7
-target_value = 9
+sig_strength = 1 #7
+target_value = 2.7
 from_random = True
+from_saved_random = True
 qmid = 14 #(7.29)
-n_iter = 20000
+n_iter = 60000
 inv_r = 0.001
 n_onehot = 5
-l=4
-l_fea=4
-l_adj=4
+l=1
+l_fea=0
+l_adj=0.3
 noise_factor = 0.2
+stop_chem = 0.1
+stop_loss = 0.3
 
 # ==================================
 
@@ -50,9 +54,21 @@ soft = nn.Softmax(dim=2)
 soft0 = nn.Softmax(dim=0)
 
 def smooth_round(x):
-    #return (396*torch.pi*x - 225*torch.sin(2*torch.pi*x) + 45*torch.sin(4*torch.pi*x) - 5*torch.sin(6*torch.pi*x))/(300*torch.pi)
+    # return (396*torch.pi*x - 225*torch.sin(2*torch.pi*x) + 45*torch.sin(4*torch.pi*x) - 5*torch.sin(6*torch.pi*x))/(300*torch.pi)
     return torch.round(x) + 0.1*(x - torch.round(x))
+
+def max_round(x):
+
+    idx = torch.argmax(x[0,:,:], dim=1)
     
+    n_x = 0.1*x
+    
+    for i,j in enumerate(idx):
+        n_x[0,i,j] = 1 - 0.1*(1-x[0,i,j])
+    return n_x
+
+    # return x
+
 def weights_to_model_inputs(fea_h, adj_vec):
 
     N = fea_h.shape[1]
@@ -60,8 +76,10 @@ def weights_to_model_inputs(fea_h, adj_vec):
     tidx = torch.tril_indices(row=N, col=N, offset=-1)
     
     atom_fea = soft(sig_strength*(fea_h-0.5))
+
+    mr_atom_fea = max_round(atom_fea)
     
-    atom_fea_ext = torch.cat([smooth_round(atom_fea), torch.matmul(smooth_round(atom_fea[0,:,:n_onehot]), torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]]))],dim=2)
+    atom_fea_ext = torch.cat([mr_atom_fea, torch.matmul(mr_atom_fea[0,:,:n_onehot], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]]))],dim=2)
     
     adj = torch.zeros((N,N))
     
@@ -79,7 +97,11 @@ def weights_to_model_inputs(fea_h, adj_vec):
     
     integer_fea = torch.sum((r_features - atom_fea_ext[0,:,:n_onehot+1])**2)
 
-    integer_adj = torch.sum((r_adj - adj)**2) 
+    integer_adj = torch.sum((r_adj - adj)**2)
+
+    # integer_fea = torch.sum(torch.sin(atom_fea_ext[0,:,:n_onehot+1]*torch.pi)**6)
+
+    # integer_adj = torch.sum(torch.sin(adj*torch.pi)**6)
     
     adj = adj.unsqueeze(0)
 
@@ -409,6 +431,9 @@ def initialize(qm9):
     if from_random:
         adj_vec = torch.randn((N*(N-1)//2))
         fea_h = torch.randn((1, N, n_onehot+1))
+        pickle.dump((adj_vec, fea_h), open("save_random.pkl","wb"))
+    elif from_saved_random:
+        adj_vec, fea_h = pickle.load(open("save_random.pkl","rb"))
     else:
         print("Model estimate for random pick:", model(*prepare_data(qm9[qmid])))
     
@@ -429,6 +454,48 @@ def initialize(qm9):
 
     return fea_h, adj_vec 
 
+
+def get_grad_norms(optimizer, params, losses):
+
+
+    grad_total = [0]*len(params)
+    grad2_total = [0]*len(params)
+
+    for loss in losses:
+        for i, p in enumerate(params):
+            optimizer.zero_grad()
+            loss.backward(retain_graph=True)
+            grad_total[i] += p.grad.data.clone()
+            grad2_total[i] += p.grad.data.clone()**2
+
+    grad_total = torch.sum(torch.tensor([torch.mean(g**2) for g in grad_total]))
+    grad2_total = torch.sum(torch.tensor([torch.mean(g) for g in grad2_total]))
+            
+    return grad_total, grad2_total
+
+def get_loss_coeffs(optimizer, params, losses):
+
+    grads = []
+
+    for loss in losses:
+        optimizer.zero_grad()
+        loss.backward(retain_graph=True)
+        grads.append([p.grad.data.clone() for p in params])
+
+    # Normalize the gradients
+    gn = gradient_normalizers(grads, losses, "loss+") # l2, loss, loss+, none  
+    
+    grads = [[g/gn[i] for g in gs] for i,gs in enumerate(grads)]
+    
+    sol, min_norm = MinNormSolver.find_min_norm_element(grads)
+
+    return [float(s) for s in sol]
+
+def shuffle(t):
+    idx = torch.randperm(t.nelement())
+    t = t.view(-1)[idx].view(t.size())
+    return t
+    
 def inverter(model, fea_h, adj_vec):
     """ Backpropagates all the way to the input to produce a molecule with a specific property """
 
@@ -450,38 +517,111 @@ def inverter(model, fea_h, adj_vec):
     constraint_losses = []
     integer_fea_losses = []
     integer_adj_losses = []
+    g1s = []
+    g2s = []
+    extra = 0
+    cycle = False
+    dip = 0
+    cdip = 0
+    ccount = 0
+    lcount = 0
     for e in range(n_iter):
         atom_fea_ext, adj, constraints, integer_fea, integer_adj = weights_to_model_inputs(fea_h, adj_vec)
         
         score = model(atom_fea_ext, adj)
         
         loss = abs(score - torch.tensor([[target_value]]))
-    
-        total_loss = loss + l*constraints + l_fea*integer_fea + l_adj*integer_adj
+
+        n_dip = e - dip
+        
+        losses_floats = [n_dip/100*float(loss), float(constraints), 0*float(integer_fea), 0*float(integer_adj)]
+
+        # # if float(loss) < 0.3:
+        # #     losses_floats[0] = 0
+        
+        # if True: #np.max(losses_floats) - np.min(losses_floats) > 1:
+        #     # c = np.array([1,1,1,1])
+        #     c = np.array([0,10,0,10])
+            
+        c = np.array(losses_floats)/np.sum(losses_floats)
+        #     g1, g2 = get_grad_norms(optimizer, [fea_h, adj_vec], [c[0]*loss, c[1]*constraints, c[2]*integer_fea, c[3]*integer_adj])
+        #     g1 = g1
+        #     g2 = g2/g1
+            
+        # else:
+        #     c = get_loss_coeffs(optimizer, [fea_h, adj_vec], [loss, constraints, integer_fea, integer_adj])
+
+        # # if np.max(c) < 0.5 or cycle:
+        # #     cycle = True
+        # #     c = 1/np.array(losses_floats)
+        # #     c = c/np.sum(c)
+            
+        # # if (g2 > 1000 and total_loss > 0.1) or (cycle and extra < 1000):
+        # #     if not cycle:
+        # #         cycle = True
+        # #         new_c = np.zeros(4)
+        # #         new_c[np.argmax(c)] = 1
+        # #     extra += 1
+        # #     c = get_loss_coeffs(optimizer, [fea_h, adj_vec], [loss, constraints, integer_fea, integer_adj])
+        # # else:
+        # #     cycle = False
+        #     extra = 0
+
+        #c = np.array([1,1,0,1])
+
+        if loss < stop_loss:
+            dip = e
+            c[0] = lcount/10000
+            lcount += 1
+        else:
+            lcount = 0
+        if constraints < stop_chem:
+            c[1] = ccount/10000
+            cdip = e
+            ccount += 1
+        else:
+            ccount = 0
+            
+        if constraints < stop_chem and loss < stop_loss:
+            break
+        
+        total_loss = c[0]*loss + c[1]*constraints + c[2]*integer_fea + c[3]*integer_adj
+
+
         total_losses.append(float(total_loss))
         losses.append(float(loss))
         constraint_losses.append(float(constraints))
         integer_fea_losses.append(float(integer_fea))
         integer_adj_losses.append(float(integer_adj))
-    
+
+        #g1s.append(float(g1))
+        #g2s.append(float(g2))
         
         # backward
         optimizer.zero_grad()
         total_loss.backward()
-    
+        
         # gradient descent or adam step
         optimizer.step()
-    
+
+        # if g2 > 100 and total_loss > 0.1:
+        #         with torch.no_grad():
+        #             N = max_size
+        #             adj_vec += torch.randint(-1,1, ((N*(N-1)//2),))*0.5
+        #             fea_h = shuffle(fea_h)
     
         if e%10 == 0:
-            print(float(total_loss), float(loss), float(constraints), float(integer_fea), float(integer_adj), float(score))
-        
+            print(c)
+            #print(float(total_loss), float(loss), float(constraints), float(integer_fea), float(integer_adj), float(score))
+            
         if e%1000 == 0:
             plt.plot(total_losses,'k')
             plt.plot(losses,'b')
             plt.plot(constraint_losses,".-", color="r")
             plt.plot(integer_fea_losses, color="orange")
             plt.plot(integer_adj_losses, color="purple")
+            plt.plot(g1s, color="pink")
+            plt.plot(g2s, color="green")
             plt.pause(0.1)
             draw_mol(atom_fea_ext, adj)
     
@@ -532,7 +672,9 @@ if __name__ == "__main__":
     print("Final value after rounding (fea_r):", model(atom_fea_ext_r, adj))
     
     print("ROUNDING DIFF")
+    print("FEA")
     print(torch.max(abs(atom_fea_ext - atom_fea_ext_r)))
+    print("ADJ")
     print(torch.max(abs(adj - adj_r)))
     print(abs(atom_fea_ext - atom_fea_ext_r))
     print(abs(adj - adj_r))
@@ -555,10 +697,15 @@ if __name__ == "__main__":
     bonds_per_atom = torch.matmul(atom_fea_ext[0,:,:n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0]))
     print("BONDS PER ATOM")
     print(bonds_per_atom)
-    
     print("SUM ADJ")
     print(torch.sum(adj, dim=1))
-    
-    print("FINAL CONSTRAINT", torch.sum((torch.sum(adj, dim=1) - bonds_per_atom)**2))
+
+    r_bonds_per_atom = torch.matmul(features, torch.tensor([1.0,4.0,3.0,2.0,1.0,0.0]))
+    print("Rounded BONDS PER ATOM")
+    print(r_bonds_per_atom)
+    print("Rounded SUM ADJ")
+    print(torch.sum(adj_round, dim=1))
+    if torch.sum(abs(r_bonds_per_atom - torch.sum(adj_round, dim=1))) > 1e-12:
+        print("FINAL STOCHIOMETRY IS WRONG!")
     
     plt.show()
