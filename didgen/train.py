@@ -77,15 +77,7 @@ def train(qm9, config, output):
 
     # Set device cuda for GPU if it's available otherwise run on the CPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    print("Size of database:", len(qm9))
-    
-    qm9_loader_train = DataLoader(qm9[:config.n_data], batch_size = config.batch_size, shuffle = True)
-    qm9_loader_valid = DataLoader(qm9[config.n_data:config.n_data + config.n_data//10], batch_size = config.batch_size, shuffle = True)
-    
-    std = torch.std(qm9.data.y[:config.n_data,4])
-    mean = torch.mean(qm9.data.y[:config.n_data,4])
-    
+        
     # Initialize network
     model = CGCNN(config.n_onehot+2,
                      atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
@@ -94,6 +86,14 @@ def train(qm9, config, output):
     if config.use_pretrained and os.path.isfile(output+'/model_weights.pth'):
         model.load_state_dict(torch.load(output+'/model_weights.pth'))
     else:
+        print("Size of database:", len(qm9))
+    
+        qm9_loader_train = DataLoader(qm9[:config.n_data], batch_size = config.batch_size, shuffle = True)
+        qm9_loader_valid = DataLoader(qm9[config.n_data:config.n_data + config.n_data//10], batch_size = config.batch_size, shuffle = True)
+    
+        std = torch.std(qm9.data.y[:config.n_data,4])
+        mean = torch.mean(qm9.data.y[:config.n_data,4])
+        
         # Loss and optimizer
         criterion = nn.MSELoss()
         optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
@@ -183,36 +183,39 @@ def train(qm9, config, output):
                 ax2.plot(x, x, color="k", alpha=0.5)
                 ax2.set_aspect("equal","box")
                 plt.pause(0.1)
-        
+
         torch.save(model.state_dict(), output+'/model_weights.pth')
-                
+
+        model.eval()
+        
         plt.ioff()
         plt.savefig("progress.png")
 
+        plt.figure()
+        
+        criterion = nn.MSELoss()
+        
+        data_train = next(iter(DataLoader(qm9[:config.n_data], batch_size = config.n_data, shuffle = False)))
+        plt.plot(data_train.y[:,4], model(*prepare_data_vector(data_train, config.max_size, config.n_onehot)).detach().numpy(), ".")
+        
+        print("FINAL TRAIN RMSE", criterion(data_train.y[:,4], model(*prepare_data_vector(data_train, config.max_size, config.n_onehot)).squeeze()))
+        
+        data_valid = next(iter(DataLoader(qm9[config.n_data:config.n_data + config.n_data//10], batch_size = config.n_data//10, shuffle = False)))
+        plt.plot(data_valid.y[:,4], model(*prepare_data_vector(data_valid, config.max_size, config.n_onehot)).detach().numpy(),".")
+        
+        print("FINAL TEST RMSE", criterion(data_valid.y[:,4], model(*prepare_data_vector(data_valid, config.max_size, config.n_onehot)).squeeze()))
+        
+        ax = plt.gca()
+        
+        x = np.linspace(0,18,300)
+        ax.fill_between(x, x+1, x-1, color="gray", alpha=0.1)
+        
+        plt.plot(x, x, color="k", alpha=0.5)
+        plt.title("Property Model Performance")
+        
+        ax.set_aspect("equal","box")
+
     model.eval()
         
-    plt.figure()
-    
-    criterion = nn.MSELoss()
-    
-    data_train = next(iter(DataLoader(qm9[:config.n_data], batch_size = config.n_data, shuffle = False)))
-    plt.plot(data_train.y[:,4], model(*prepare_data_vector(data_train, config.max_size, config.n_onehot)).detach().numpy(), ".")
-    
-    print("FINAL TRAIN RMSE", criterion(data_train.y[:,4], model(*prepare_data_vector(data_train, config.max_size, config.n_onehot)).squeeze()))
-    
-    data_valid = next(iter(DataLoader(qm9[config.n_data:config.n_data + config.n_data//10], batch_size = config.n_data//10, shuffle = False)))
-    plt.plot(data_valid.y[:,4], model(*prepare_data_vector(data_valid, config.max_size, config.n_onehot)).detach().numpy(),".")
-    
-    print("FINAL TEST RMSE", criterion(data_valid.y[:,4], model(*prepare_data_vector(data_valid, config.max_size, config.n_onehot)).squeeze()))
-    
-    ax = plt.gca()
-    
-    x = np.linspace(0,18,300)
-    ax.fill_between(x, x+1, x-1, color="gray", alpha=0.1)
-    
-    plt.plot(x, x, color="k", alpha=0.5)
-    
-    ax.set_aspect("equal","box")
-
     return model
 

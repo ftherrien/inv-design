@@ -8,7 +8,7 @@ def read_options():
     parser = argparse.ArgumentParser()
     parser.add_argument("-p","--target-property",dest="property",type=float, default=6, help="Requested HOMO-LUMO gap")
     parser.add_argument("-n","--number-of-gen",dest="n",type=int, default=1, help="Number of requested molecules")
-    parser.add_argument("-c","--config",dest="config",type=str, default="config.yml", help="Config file location")
+    parser.add_argument("-c","--config",dest="config",type=str, default=None, help="Config file location")
     parser.add_argument("-o","--output",dest="output",type=str, default="out_gen", help="Output folder")
     
     args = parser.parse_args()

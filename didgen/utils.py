@@ -1,8 +1,10 @@
-from rdkit.Chem.rdmolfiles import SDMolSupplier
+from rdkit.Chem.rdmolfiles import SDMolSupplier, MolToXYZFile
+from rdkit.Chem.AllChem import EmbedMolecule, UFFOptimizeMolecule
 from rdkit.Chem.Draw import MolToImage
 import rdkit.Chem as Chem
 import torch
 import numpy as np
+import pickle
 
 def round_mol(atom_fea_ext, adj, n_onehot, smooth=False, half=False):
 
@@ -25,16 +27,27 @@ def round_mol(atom_fea_ext, adj, n_onehot, smooth=False, half=False):
 
     return features, adj
 
-def draw_mol(atom_fea_ext, adj, n_onehot, output):
+def draw_mol(atom_fea_ext, adj, n_onehot, output, index=0, embed=False):
 
     features, adj = round_mol(atom_fea_ext, adj, n_onehot)
     
     mol = MolFromGraph(features, adj, n_onehot)
+
+    pickle.dump(mol,open(output+"/xyzs/generated_mol_%d.pickle"%(index),"wb"))
     
     img = MolToImage(mol)
     
-    img.save(output+"/generated_mol.png")
+    img.save(output+"/drawings/generated_mol_%d.png"%(index))
 
+    if embed:
+        Chem.SanitizeMol(mol)
+        idc = EmbedMolecule(mol, 1000)
+        if idc != -1:
+            UFFOptimizeMolecule(mol)
+            MolToXYZFile(mol, output+"/xyzs/generated_mol_%d.xyz"%(index),idc)
+        else:
+            print("Embeding failed!")
+            
     return features, adj
 
 def MolFromGraph(features, adjacency_matrix, n_onehot):

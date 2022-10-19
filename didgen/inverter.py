@@ -7,6 +7,7 @@ from tqdm import tqdm
 import numpy as np
 import pickle
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 sig = nn.Sigmoid()
 soft = nn.Softmax(dim=2)
@@ -93,16 +94,16 @@ def weights_to_model_inputs(fea_h, adj_vec, config):
 
     return atom_fea_ext, adj, constraints, integer_fea, integer_adj
 
-def initialize(qm9, config, output):
+def initialize(qm9, config, output, i):
 
     N = config.max_size
     
     if config.start_from == "random":
         adj_vec = torch.randn((N*(N-1)//2))
         fea_h = torch.randn((1, N, config.n_onehot+1))
-        pickle.dump((adj_vec, fea_h), open("save_random.pkl","wb"))
+        pickle.dump((adj_vec, fea_h), open(output + "/save_random_%d.pkl"%(i),"wb"))
     elif config.start_from == "saved":
-        adj_vec, fea_h = pickle.load(open("save_random.pkl","rb"))
+        adj_vec, fea_h = pickle.load(open(output + "/save_random_%d.pkl"%(i),"rb"))
     else:
         qmid = int(config.start_from)
         fea_h, adj_vec = start_from(qm9[qmid])
@@ -133,13 +134,14 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
         param.requires_grad = False
     
     optimizer = optim.Adam([adj_vec, fea_h], lr=config.inv_r)
-    
-    plt.ion()
-    plt.figure()
-    plt.plot([],'b')
-    plt.yscale('log')
-    plt.xlabel('Epoch')
-    plt.ylabel('Difference (eV)')
+
+    if config.show_losses:
+        plt.ion()
+        plt.figure()
+        plt.plot([],'b')
+        plt.yscale('log')
+        plt.xlabel('Epoch')
+        plt.ylabel('Difference (eV)')
     
     losses = []
     total_losses = []
@@ -154,7 +156,13 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
     cdip = 0
     ccount = 0
     lcount = 0
-    for e in range(config.n_iter):
+
+    if config.show_losses:
+        loop = range(config.n_iter)
+    else:
+        loop = tqdm(range(config.n_iter))
+    
+    for e in loop:
         atom_fea_ext, adj, constraints, integer_fea, integer_adj = weights_to_model_inputs(fea_h, adj_vec, config)
         
         score = model(atom_fea_ext, adj)
@@ -200,10 +208,10 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
         # gradient descent or adam step
         optimizer.step()
     
-        if e%10 == 0:
+        if e%10 == 0 and config.show_losses:
             print(float(total_loss), float(loss), float(constraints), float(integer_fea), float(integer_adj), float(score))
             
-        if e%1000 == 0:
+        if e%1000 == 0 and config.show_losses:
             plt.plot(total_losses,'k')
             plt.plot(losses,'b')
             plt.plot(constraint_losses,".-", color="r")
@@ -213,6 +221,8 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
             plt.plot(g2s, color="green")
             plt.pause(0.1)
             draw_mol(atom_fea_ext, adj, config.n_onehot, output)
-    
-    plt.ioff()
+
+    if config.show_losses:
+        plt.ioff()
+        
     return fea_h, adj_vec
