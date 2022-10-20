@@ -14,7 +14,6 @@ setup(name='didgen',
           'torch',
           'tqdm',
           'matplotlib',
-          'torch_geometric',
           'rdkit',
       ],
       scripts=['didgenerate'],)

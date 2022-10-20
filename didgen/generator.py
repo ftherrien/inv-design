@@ -7,14 +7,13 @@ import yaml
 import torch
 from torch_geometric import datasets
 import matplotlib
-matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import os
 import pickle
 from pathlib import Path
 
 def generate(target_property, n, output, config=None):
-
+    
     if config is None:
         config = str(Path(__file__).resolve().parents[1]) + "/config.yml"
     
