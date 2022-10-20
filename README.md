@@ -1,5 +1,20 @@
-*True Inverse Design ussing ML*
+# Direct Inverse Design using ML
 
-1. Adapt CGCNN to take in ADJ matrix
-2. Train on simple database of molecules (QM9)
-3. Using training to optimize ADJ and predict molecule with input property
+## Install
+
+Installation requires Pytorch Geometric
+
+See https://pytorch-geometric.readthedocs.io/en/latest/notes/installation.html
+
+```
+pip install git+https://github.com/ftherrien/inv-design
+```
+
+## Usage
+
+didgenerate [-h] [-p PROPERTY] [-n N] [-c CONFIG] [-o OUTPUT]
+
+
+## Generate molecules online
+
+https://colab.research.google.com/github/ftherrien/inv-design/blob/master/didgenerate.ipynb
