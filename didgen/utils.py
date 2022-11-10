@@ -12,7 +12,7 @@ def round_mol(atom_fea_ext, adj, n_onehot, smooth=False, half=False):
 
     idx = torch.argmax(atom_fea_ext[0,:,:n_onehot+1], dim=1)
     
-    features = torch.zeros((N,n_onehot+1))
+    features = torch.zeros((N,n_onehot+1), device=atom_fea_ext.device)
     
     for i,j in enumerate(idx):
         features[i,j] = 1
@@ -60,7 +60,7 @@ def MolFromGraph(features, adjacency_matrix, n_onehot):
     # add atoms to mol and keep track of index
     node_to_idx = {}
     for i in range(len(features)):
-        atom_type = atoms[(features[i,:n_onehot]==1).numpy()]
+        atom_type = atoms[(features[i,:n_onehot]==1).cpu().numpy()]
         if len(atom_type) > 0:
             a = Chem.Atom(atom_type[0])
             molIdx = mol.AddAtom(a)

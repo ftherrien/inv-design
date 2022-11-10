@@ -15,5 +15,6 @@ setup(name='didgen',
           'tqdm',
           'matplotlib',
           'rdkit',
+          'pyyaml',
       ],
       scripts=['didgenerate'],)

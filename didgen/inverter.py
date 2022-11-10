@@ -1,4 +1,4 @@
-from .utils import draw_mol, round_mol
+from .utils import draw_mol, round_mol, MolFromGraph
 from .train import prepare_data
 
 import torch
@@ -8,19 +8,22 @@ import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from rdkit.Chem.Draw import MolToImage
 
 sig = nn.Sigmoid()
 soft = nn.Softmax(dim=2)
 soft0 = nn.Softmax(dim=0)
 
-def start_from(data):
+def start_from(data, config):
 
+    device = data.x.device
+    
     N = config.max_size
 
     tidx = torch.tril_indices(row=N, col=N, offset=-1)
     
     # Get to correct shape
-    atom_fea = torch.zeros(N, config.n_onehot+1)
+    atom_fea = torch.zeros(N, config.n_onehot+1, device=device)
     atom_fea[:data.x.shape[0],:config.n_onehot] = 1*data.x[:,:config.n_onehot]
     atom_fea[data.x.shape[0]:, config.n_onehot] = 1
     
@@ -28,11 +31,11 @@ def start_from(data):
     
     #N = atom_fea.shape[1]
     
-    adj = torch.zeros(N,N)
+    adj = torch.zeros(N, N, device=device)
     for n,(i,j) in enumerate(data.edge_index.T):
-        adj[i,j] = data.edge_attr[n,:].matmul(torch.tensor([1,2,3,1.5]))
+        adj[i,j] = data.edge_attr[n,:].matmul(torch.tensor([1,2,3,1.5], device=device))
 
-    adj_vec = torch.zeros(N*(N-1)//2)
+    adj_vec = torch.zeros(N*(N-1)//2, device=device)
     for i, t in enumerate(tidx.T):
         adj_vec[i] = adj[t[0],t[1]]
         
@@ -58,6 +61,8 @@ def max_round(x):
 
 def weights_to_model_inputs(fea_h, adj_vec, config):
 
+    device = adj_vec.device
+    
     N = fea_h.shape[1]
     
     tidx = torch.tril_indices(row=N, col=N, offset=-1)
@@ -66,9 +71,9 @@ def weights_to_model_inputs(fea_h, adj_vec, config):
 
     mr_atom_fea = max_round(atom_fea)
     
-    atom_fea_ext = torch.cat([mr_atom_fea, torch.matmul(mr_atom_fea[0,:,:config.n_onehot], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]]))],dim=2)
+    atom_fea_ext = torch.cat([mr_atom_fea, torch.matmul(mr_atom_fea[0,:,:config.n_onehot], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]], device = device))],dim=2)
     
-    adj = torch.zeros((N,N))
+    adj = torch.zeros((N,N), device=device)
     
     adj[tidx[0],tidx[1]] = adj_vec**2
     
@@ -78,7 +83,7 @@ def weights_to_model_inputs(fea_h, adj_vec, config):
     
     r_features, r_adj = round_mol(atom_fea_ext, adj, config.n_onehot)
 
-    bonds_per_atom = torch.matmul(r_features[:,:config.n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0]))
+    bonds_per_atom = torch.matmul(r_features[:,:config.n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0], device = device))
 
     constraints = torch.sum((torch.sum(adj, dim=1) - bonds_per_atom)**2)
     
@@ -94,24 +99,23 @@ def weights_to_model_inputs(fea_h, adj_vec, config):
 
     return atom_fea_ext, adj, constraints, integer_fea, integer_adj
 
-def initialize(qm9, config, output, i):
+def initialize(qm9, config, output, i, device="cpu"):
 
     N = config.max_size
     
     if config.start_from == "random":
-        adj_vec = torch.randn((N*(N-1)//2))
-        fea_h = torch.randn((1, N, config.n_onehot+1))
+        adj_vec = torch.randn((N*(N-1)//2), device=device)
+        fea_h = torch.randn((1, N, config.n_onehot+1), device=device)
         pickle.dump((adj_vec, fea_h), open(output + "/save_random_%d.pkl"%(i),"wb"))
     elif config.start_from == "saved":
         adj_vec, fea_h = pickle.load(open(output + "/save_random_%d.pkl"%(i),"rb"))
     else:
         qmid = int(config.start_from)
-        fea_h, adj_vec = start_from(qm9[qmid])
-        print("Model estimate for existing mol:", model(*prepare_data(qm9[qmid], config.max_size, config.one_hot)), config.property_mode_training.max_size)
+        fea_h, adj_vec = start_from(qm9[qmid].to(device), config)
     
-        init_features, init_adj = prepare_data(qm9[qmid], config.max_size, config.one_hot)
+        init_features, init_adj = prepare_data(qm9[qmid].to(device), config.max_size, config.n_onehot)
     
-        mol = MolFromGraph(init_features[0,:,:config.n_onehot],init_adj.squeeze())
+        mol = MolFromGraph(init_features[0,:,:config.n_onehot],init_adj.squeeze(), config.n_onehot)
     
         img = MolToImage(mol)
     
@@ -167,13 +171,16 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
         
         score = model(atom_fea_ext, adj)
         
-        loss = abs(score - torch.tensor([[target_value]]))
+        loss = abs(score - torch.tensor([[target_value]], device=score.device))
 
         n_dip = e - dip
         
         losses_floats = [n_dip/100*float(loss), float(constraints), 0*float(integer_fea), 0*float(integer_adj)]
-            
-        c = np.array(losses_floats)/np.sum(losses_floats)
+
+        if all(losses_floats) == 0:
+            c = np.array(losses_floats)
+        else:
+            c = np.array(losses_floats)/np.sum(losses_floats)
 
         if loss < config.stop_loss:
             dip = e

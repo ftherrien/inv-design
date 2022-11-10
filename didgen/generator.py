@@ -43,8 +43,11 @@ def generate(target_property, n, output, config=None):
         
         qm9 = qm9[idx]
     else:
-        qm9 = None
-        
+        if config.inverter.start_from in ["random", "saved"]:
+            qm9 = None
+        else:
+            qm9 = datasets.QM9(output + "/dataset", pre_filter=keep_in)
+            
     model = train(qm9, config.property_model_training, output)
     
     print("Starting molecule generation loop")
@@ -57,8 +60,10 @@ def generate(target_property, n, output, config=None):
         
         print("------------------------------------")
         print("Molecule %d:"%i)
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        fea_h, adj_vec = initialize(qm9, config.inverter, output, j)
+        fea_h, adj_vec = initialize(qm9, config.inverter, output, j, device=device)
         
         init_atom_fea_ext, init_adj, constraints, integer_fea, integer_adj = weights_to_model_inputs(fea_h, adj_vec, config.inverter)    
         print("Model estimate for starting point:", model(init_atom_fea_ext, init_adj), constraints, integer_fea, integer_adj)
@@ -72,7 +77,7 @@ def generate(target_property, n, output, config=None):
 
         features, adj_round = round_mol(atom_fea_ext, adj, config.inverter.n_onehot)
 
-        r_bonds_per_atom = torch.matmul(features, torch.tensor([1.0,4.0,3.0,2.0,1.0,0.0]))
+        r_bonds_per_atom = torch.matmul(features, torch.tensor([1.0,4.0,3.0,2.0,1.0,0.0], device=device))
         
         if torch.sum(abs(r_bonds_per_atom - torch.sum(adj_round, dim=1))) > 1e-12:
             print("Generated molecule is not stochiometric")
@@ -115,7 +120,7 @@ def generate(target_property, n, output, config=None):
         print("ROUNDED FINAL ADJ")
         print(adj_round)
         
-        bonds_per_atom = torch.matmul(atom_fea_ext[0,:,:config.inverter.n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0]))
+        bonds_per_atom = torch.matmul(atom_fea_ext[0,:,:config.inverter.n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0], device=device))
         print("BONDS PER ATOM")
         print(bonds_per_atom)
         print("SUM ADJ")
