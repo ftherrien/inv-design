@@ -88,7 +88,7 @@ def generate(target_property, n, output, config=None):
 
         print("Final property value:", model(atom_fea_ext, adj))
             
-        features, adj_round = draw_mol(atom_fea_ext, adj, config.inverter.n_onehot, output, index=i, embed=True)
+        features, adj_round, smiles = draw_mol(atom_fea_ext, adj, config.inverter.n_onehot, output, index=i, embed=True)
         
         atom_fea_ext_r, adj_r = prepare_data_from_features(features, adj_round, config.inverter.n_onehot)    
 
@@ -131,8 +131,11 @@ def generate(target_property, n, output, config=None):
         print("Rounded SUM ADJ")
         print(torch.sum(adj_round, dim=1))
 
+        print("Generated Molecule SMILES:")
+        print(smiles)
+        
         # Print value to file
-        print(i,float(val),file=f)
+        print(i, smiles, float(val),file=f)
 
         i+=1
         j+=1

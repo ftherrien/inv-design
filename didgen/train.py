@@ -98,7 +98,7 @@ def train(qm9, config, output):
 
     if config.use_pretrained or config.transfer_learn:
         if os.path.isfile(output+'/model_weights.pth'):
-            model.load_state_dict(torch.load(output+'/model_weights.pth').to(device))
+            model.load_state_dict(torch.load(output+'/model_weights.pth', map_location=device))
         else:
             raise RuntimeError("Trying to use pretrained model but %s/model_weights.pth does not exist"%(output))
     
@@ -188,15 +188,15 @@ def train(qm9, config, output):
                 
             epoch_loss_train[-1] = epoch_loss_train[-1]/len(qm9_loader_train)
             epoch_loss_valid[-1] = epoch_loss_valid[-1]/len(qm9_loader_valid)
-            print(epoch, "AVG TRAIN RMSE", float(epoch_loss_train[-1]), "AVG VALID RMSE", float(epoch_loss_valid[-1]))
+            print(epoch, "AVG TRAIN RMSE", float(epoch_loss_train[-1]), "AVG VALID RMSE", float(epoch_loss_valid[-1]), flush=True)
             #scheduler.step(epoch_loss_train[-1])
             
             if epoch%10 == 0:
                 ax2.clear()
                 ax1.plot(epoch_loss_train[1:],'b',label = 'Train')
                 ax1.plot(epoch_loss_valid[:-1],'r',label = 'Validation')
-                ax2.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".")
-                ax2.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(), ".")
+                ax2.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".", alpha=0.1)
+                ax2.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(), ".", alpha=0.1)
                 x = np.linspace(0,18,300)
                 ax2.fill_between(x, x+1, x-1, color="gray", alpha=0.1)
                 ax2.plot(x, x, color="k", alpha=0.5)
@@ -204,8 +204,6 @@ def train(qm9, config, output):
                 plt.pause(0.1)
 
         print("Total training time:", time.time() - training_time)
-
-        print("Memoire", torch.cuda.memory_allocated(device))
         
         torch.save(model.state_dict(), output+'/model_weights.pth')
         
@@ -244,11 +242,11 @@ def train(qm9, config, output):
 
         plt.figure()
                 
-        plt.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".")
+        plt.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".", alpha=0.1)
         
         print("FINAL TRAIN RMSE", criterion(torch.cat(epoch_targets), torch.cat(epoch_scores)))
         
-        plt.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(),".")
+        plt.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(),".", alpha=0.1)
         
         print("FINAL TEST RMSE", criterion(torch.cat(epoch_targets_valid), torch.cat(epoch_scores_valid)))
         
@@ -261,6 +259,8 @@ def train(qm9, config, output):
         plt.title("Property Model Performance")
         
         ax.set_aspect("equal","box")
+
+        plt.savefig(output+"/final_performance.png")
 
     model.eval()
         

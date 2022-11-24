@@ -1,4 +1,4 @@
-from rdkit.Chem.rdmolfiles import SDMolSupplier, MolToXYZFile
+from rdkit.Chem.rdmolfiles import SDMolSupplier, MolToXYZFile, MolToSmiles
 from rdkit.Chem.AllChem import EmbedMolecule, UFFOptimizeMolecule
 from rdkit.Chem.Draw import MolToImage
 import rdkit.Chem as Chem
@@ -36,6 +36,7 @@ def draw_mol(atom_fea_ext, adj, n_onehot, output, index=0, embed=False):
     pickle.dump(mol,open(output+"/xyzs/generated_mol_%d.pickle"%(index),"wb"))
     
     img = MolToImage(mol)
+    smiles = MolToSmiles(mol)
     
     img.save(output+"/drawings/generated_mol_%d.png"%(index))
 
@@ -48,7 +49,7 @@ def draw_mol(atom_fea_ext, adj, n_onehot, output, index=0, embed=False):
         else:
             print("Embeding failed!")
             
-    return features, adj
+    return features, adj, smiles
 
 def MolFromGraph(features, adjacency_matrix, n_onehot):
 
