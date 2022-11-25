@@ -51,10 +51,10 @@ def max_round(x):
 
     idx = torch.argmax(x[0,:,:], dim=1)
     
-    n_x = 0.1*x
+    n_x = 0.3*x
     
     for i,j in enumerate(idx):
-        n_x[0,i,j] = 1 - 0.1*(1-x[0,i,j])
+        n_x[0,i,j] = 1 - 0.3*(1-x[0,i,j])
     return n_x
 
     # return x
@@ -66,9 +66,11 @@ def weights_to_model_inputs(fea_h, adj_vec, config):
     N = fea_h.shape[1]
     
     tidx = torch.tril_indices(row=N, col=N, offset=-1)
-    
-    atom_fea = soft(config.sig_strength*(fea_h-0.5))
 
+    atom_fea = fea_h**2/torch.sum(fea_h**2,dim=2,keepdim=True).expand((1, fea_h.shape[1], fea_h.shape[2]))
+    
+    # atom_fea = soft(config.sig_strength*(fea_norm-0.5))
+    
     mr_atom_fea = max_round(atom_fea)
     
     atom_fea_ext = torch.cat([mr_atom_fea, torch.matmul(mr_atom_fea[0,:,:config.n_onehot], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]], device = device))],dim=2)
@@ -138,6 +140,7 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
         param.requires_grad = False
     
     optimizer = optim.Adam([adj_vec, fea_h], lr=config.inv_r)
+    # optimizer = optim.SGD([adj_vec, fea_h], lr=config.inv_r)
 
     if config.show_losses:
         plt.ion()
@@ -157,7 +160,6 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
     extra = 0
     cycle = False
     dip = 0
-    cdip = 0
     ccount = 0
     lcount = 0
 
@@ -167,6 +169,7 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
         loop = tqdm(range(config.n_iter))
     
     for e in loop:
+        
         atom_fea_ext, adj, constraints, integer_fea, integer_adj = weights_to_model_inputs(fea_h, adj_vec, config)
         
         score = model(atom_fea_ext, adj)
@@ -175,12 +178,12 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
 
         n_dip = e - dip
         
-        losses_floats = [n_dip/100*float(loss), float(constraints), 0*float(integer_fea), 0*float(integer_adj)]
+        losses_floats = np.array([np.exp(n_dip/100)*float(loss), float(constraints), 0*float(integer_fea), 0*float(integer_adj)])
 
-        if all(losses_floats) == 0:
-            c = np.array(losses_floats)
+        if all(losses_floats == 0):
+            c = losses_floats
         else:
-            c = np.array(losses_floats)/np.sum(losses_floats)
+            c = losses_floats/np.sum(losses_floats)
 
         if loss < config.stop_loss:
             dip = e
@@ -190,8 +193,7 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
             lcount = 0
             
         if constraints < config.stop_chem:
-            c[1] = ccount/10000
-            cdip = e
+            # c[1] = ccount/10000
             ccount += 1
         else:
             ccount = 0
@@ -199,8 +201,8 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
         if constraints < config.stop_chem and loss < config.stop_loss:
             break
         
-        total_loss = c[0]*loss + c[1]*constraints + c[2]*integer_fea + c[3]*integer_adj
-
+        total_loss = torch.log(c[0]*loss + c[1]*constraints) #+ c[2]*integer_fea + c[3]*integer_adj
+        total_loss = c[0]*loss + c[1]*constraints
 
         total_losses.append(float(total_loss))
         losses.append(float(loss))
@@ -214,9 +216,10 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
         
         # gradient descent or adam step
         optimizer.step()
-    
+        
         if e%10 == 0 and config.show_losses:
-            print(float(total_loss), float(loss), float(constraints), float(integer_fea), float(integer_adj), float(score))
+            print(c[0], c[1], n_dip, float(loss), torch.max(abs(fea_h)), torch.max(abs(adj_vec)))
+            # print(float(total_loss), float(loss), float(constraints), float(integer_fea), float(integer_adj), float(score))
             
         if e%1000 == 0 and config.show_losses:
             plt.plot(total_losses,'k')
@@ -231,5 +234,7 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
 
     if config.show_losses:
         plt.ioff()
+
+    print(fea_h, adj_vec)
         
     return fea_h, adj_vec
