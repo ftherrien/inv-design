@@ -13,6 +13,7 @@ property_model_training:
 
 inverter:
     max_size: 10
+    starting_size: 10 
     sig_strength: 1
     start_from: "random"
     n_iter: 30000

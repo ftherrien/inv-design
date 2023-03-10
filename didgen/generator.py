@@ -12,6 +12,8 @@ import os
 import pickle
 from pathlib import Path
 
+torch.set_printoptions(sci_mode=False)
+
 def generate(target_property, n, output, config=None):
     
     if config is None:
@@ -78,6 +80,12 @@ def generate(target_property, n, output, config=None):
         features, adj_round = round_mol(atom_fea_ext, adj, config.inverter.n_onehot)
 
         r_bonds_per_atom = torch.matmul(features, torch.tensor([1.0,4.0,3.0,2.0,1.0,0.0], device=device))
+
+        # Number of components in graph
+
+        L = torch.diag(torch.sum((adj_round != 0),axis=0)) - (adj_round != 0)*1
+
+        n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - int(torch.sum(features[:,config.inverter.n_onehot]))
         
         if torch.sum(abs(r_bonds_per_atom - torch.sum(adj_round, dim=1))) > 1e-12:
             print("Generated molecule is not stochiometric")
@@ -131,11 +139,12 @@ def generate(target_property, n, output, config=None):
         print("Rounded SUM ADJ")
         print(torch.sum(adj_round, dim=1))
 
+        print("Number of components (molecules) in generated graph:", n_comp)
         print("Generated Molecule SMILES:")
         print(smiles)
         
         # Print value to file
-        print(i, smiles, float(val),file=f)
+        print(i, n_comp, smiles, float(val),file=f)
 
         i+=1
         j+=1

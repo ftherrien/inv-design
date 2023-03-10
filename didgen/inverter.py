@@ -104,10 +104,26 @@ def weights_to_model_inputs(fea_h, adj_vec, config):
 def initialize(qm9, config, output, i, device="cpu"):
 
     N = config.max_size
+
+    if type(config.starting_size) == list:
+        max_N = int(torch.randint(*config.starting_size, (1,)))
+    else:
+        max_N = config.starting_size
+        
+    tidx = torch.tril_indices(row=N, col=N, offset=-1)
     
     if config.start_from == "random":
+        
         adj_vec = torch.randn((N*(N-1)//2), device=device)
+
+        adj_vec[(tidx[0] > max_N - 1) | (tidx[1] > max_N - 1)] = 0
+        
         fea_h = torch.randn((1, N, config.n_onehot+1), device=device)
+
+        fea_h[0,max_N:,:] = 0
+
+        fea_h[0,max_N:,config.n_onehot] = 1
+        
         pickle.dump((adj_vec, fea_h), open(output + "/save_random_%d.pkl"%(i),"wb"))
     elif config.start_from == "saved":
         adj_vec, fea_h = pickle.load(open(output + "/save_random_%d.pkl"%(i),"rb"))
