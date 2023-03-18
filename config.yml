@@ -17,6 +17,12 @@ inverter:
     sig_strength: 1
     start_from: "random"
     n_iter: 30000
+     mini_hpo:
+        n_comb: 0
+        n_starts: 2000
+        n_iter: 20
+        stop_chem: 0.3
+        stop_loss: 1
     inv_r: 0.001
     n_onehot: 5
     l_loss: 1

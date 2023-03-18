@@ -1,5 +1,8 @@
 from .train import train, prepare_data_from_features
 from .inverter import invert, weights_to_model_inputs, initialize
+#from .inverter import invert_AO as invert
+#from .inverter import weights_to_model_inputs_AO as weights_to_model_inputs
+#from .inverter import initialize_AO as initialize
 from .utils import round_mol, draw_mol
 
 from types import SimpleNamespace
@@ -11,8 +14,123 @@ import matplotlib.pyplot as plt
 import os
 import pickle
 from pathlib import Path
+import itertools
+from copy import deepcopy
+from numpy.random import choice
 
-torch.set_printoptions(sci_mode=False)
+torch.set_printoptions(sci_mode=False,linewidth = 300)
+
+
+def random_product(n, *args):
+    sizes = torch.tensor([len(arg) for arg in args])
+    Ns = choice(torch.prod(sizes), n, replace=False)
+    combs = []
+    for N in Ns:
+        comb = []
+        for i, arg in enumerate(args):
+            comb.append(arg[N//int(torch.prod(sizes[i+1:]))])
+            N = N%int(torch.prod(sizes[i+1:]))
+        combs.append(comb)
+
+    return combs
+        
+    
+def mini_hpo(device, qm9, output, target_property, model, config):
+
+    first = True
+    configs = []
+    scores = []
+    n_iters = []
+
+    for params in random_product(config.inverter.mini_hpo.n_comb, config.inverter.inv_r, config.inverter.l_loss, config.inverter.l_const, config.inverter.starting_size):
+
+        print("PARAMS:", params)
+        
+        tmpconfig = deepcopy(config.inverter)
+
+        tmpconfig.inv_r = params[0]
+        tmpconfig.l_loss = params[1]
+        tmpconfig.l_const = params[2]
+        tmpconfig.starting_size = params[3]
+
+        if first:
+            tmpconfig.start_from = "random"
+            first = False
+        else:
+            tmpconfig.start_from = "saved"
+
+        tmpconfig.n_iter = config.inverter.mini_hpo.n_iter
+        tmpconfig.show_losses = False
+        tmpconfig.max_attemps = 1
+        tmpconfig.stop_chem = config.inverter.mini_hpo.stop_chem
+        tmpconfig.stop_loss = config.inverter.mini_hpo.stop_loss
+
+        score = 0
+        avg_n_iter = 0
+        for j in range(config.inverter.mini_hpo.n_starts):
+    
+            fea_h, adj_vec = initialize(qm9, tmpconfig, output, j, device=device)
+            
+            init_atom_fea_ext, init_adj, constraints, integer_fea, integer_adj = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)    
+            
+            fea_h, adj_vec, n_iter_final = invert(target_property, model, fea_h, adj_vec, tmpconfig, output)
+            
+            atom_fea_ext, adj, _, _, _ = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)
+            
+            features, adj_round = round_mol(atom_fea_ext, adj, tmpconfig.n_onehot)
+            
+            r_bonds_per_atom = torch.matmul(features, torch.tensor([1.0,4.0,3.0,2.0,1.0,0.0], device=device))
+            
+            # Number of components in graph
+            
+            L = torch.diag(torch.sum((adj_round != 0),axis=0)) - (adj_round != 0)*1
+            
+            n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - int(torch.sum(features[:,tmpconfig.n_onehot]))
+            
+            if n_iter_final < tmpconfig.n_iter - 1 and n_comp < 3:
+                score += 1
+                avg_n_iter += n_iter_final
+
+        if score > 0:
+            avg_n_iter = avg_n_iter/score
+
+        n_iters.append(avg_n_iter)
+        configs.append(tmpconfig)
+        scores.append(score)
+
+    print("SCORES", scores)
+    scores = torch.tensor(scores)
+    n_iters = torch.tensor(n_iters)
+    
+    id_max = torch.argwhere(scores == torch.max(scores))
+    
+    bestconfig = configs[id_max[torch.argmin(n_iters[id_max])]]
+
+    outconfig = deepcopy(config)
+
+    outconfig.inverter.inv_r         = bestconfig.inv_r
+    outconfig.inverter.l_loss        = bestconfig.l_loss
+    outconfig.inverter.l_const       = bestconfig.l_const
+    outconfig.inverter.starting_size = bestconfig.starting_size
+
+    print("CONFIG", outconfig.inverter)
+        
+    return outconfig
+                
+def to_SimpleNamespace(conf_dict):
+
+    return SimpleNamespace(**{k:(to_SimpleNamespace(v) if type(v) is dict else v) for k,v in conf_dict.items()})
+
+def from_SimpleNamespace(namespace):
+
+    conf_dict = deepcopy(vars(namespace))
+    
+    for k,v in conf_dict.items():
+        if type(v) is SimpleNamespace:
+            conf_dict[k] = from_SimpleNamespace(conf_dict[k])
+
+    return conf_dict
+
 
 def generate(target_property, n, output, config=None):
     
@@ -22,8 +140,8 @@ def generate(target_property, n, output, config=None):
     with open(config) as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
 
-    config = SimpleNamespace(**{k:SimpleNamespace(**v) for k,v in config.items()})
-
+    config = to_SimpleNamespace(config)
+    
     os.makedirs(output, exist_ok=True)
     os.makedirs(output + "/drawings", exist_ok=True)
     os.makedirs(output + "/xyzs", exist_ok=True)
@@ -56,14 +174,21 @@ def generate(target_property, n, output, config=None):
 
     f = open(output + "/property_value_list.txt","w")
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    if config.inverter.mini_hpo.n_comb:
+        config = mini_hpo(device, qm9, output, target_property, model, config)
+
+        config.inverter.mini_hpo.n_comb = 0
+        
+        yaml.dump(from_SimpleNamespace(config), open(output + "/config_optim.yml","w"))
+        
     i=0
     j=0
     while i < n and j < n*config.inverter.max_attempts:
         
         print("------------------------------------")
         print("Molecule %d:"%i)
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         fea_h, adj_vec = initialize(qm9, config.inverter, output, j, device=device)
         
@@ -71,7 +196,7 @@ def generate(target_property, n, output, config=None):
         print("Model estimate for starting point:", model(init_atom_fea_ext, init_adj), constraints, integer_fea, integer_adj)
 
         print("Generating molecule with requested property...")
-        fea_h, adj_vec = invert(target_property, model, fea_h, adj_vec, config.inverter, output)
+        fea_h, adj_vec, _ = invert(target_property, model, fea_h, adj_vec, config.inverter, output)
         
         # Printing the result ---------------------------------------------------------------------------
         
@@ -95,7 +220,10 @@ def generate(target_property, n, output, config=None):
             print("Generation successful")
 
         print("Final property value:", model(atom_fea_ext, adj))
-            
+
+        print(adj)
+        print(atom_fea_ext)
+        
         features, adj_round, smiles = draw_mol(atom_fea_ext, adj, config.inverter.n_onehot, output, index=i, embed=True)
         
         atom_fea_ext_r, adj_r = prepare_data_from_features(features, adj_round, config.inverter.n_onehot)    
