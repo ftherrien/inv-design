@@ -1,8 +1,5 @@
 from .train import train, prepare_data_from_features
 from .inverter import invert, weights_to_model_inputs, initialize
-#from .inverter import invert_AO as invert
-#from .inverter import weights_to_model_inputs_AO as weights_to_model_inputs
-#from .inverter import initialize_AO as initialize
 from .utils import round_mol, draw_mol
 
 from types import SimpleNamespace

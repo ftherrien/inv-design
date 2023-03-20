@@ -17,7 +17,7 @@ inverter:
     sig_strength: 1
     start_from: "random"
     n_iter: 30000
-     mini_hpo:
+    mini_hpo:
         n_comb: 0
         n_starts: 2000
         n_iter: 20
