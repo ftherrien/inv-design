@@ -14,6 +14,8 @@ from pathlib import Path
 import itertools
 from copy import deepcopy
 from numpy.random import choice
+from bayes_opt import BayesianOptimization
+
 
 torch.set_printoptions(sci_mode=False,linewidth = 300)
 
@@ -32,90 +34,135 @@ def random_product(n, *args):
         combs.append(comb)
 
     return combs
+
+def init_test_params(config, output, device):
+
+    tmpconfig = deepcopy(config.inverter)
+    
+    tmpconfig.starting_size = config.inverter.max_size
+    tmpconfig.start_from = "random"
+
+    for j in range(config.inverter.mini_hpo.n_starts):
+        initialize(None, tmpconfig, output, j, device=device)
+    
+
+
+def test_params(target_property, model, config, output, device, *params):
+
+    print("PARAMS:", params)
+    
+    tmpconfig = deepcopy(config.inverter)
+
+    tmpconfig.inv_r = params[0]
+    tmpconfig.l_loss = params[1]
+    tmpconfig.l_const = params[2]
+    tmpconfig.starting_size = params[3]
+
+
+    tmpconfig.start_from = "saved"
+    tmpconfig.n_iter = config.inverter.mini_hpo.n_iter
+    tmpconfig.show_losses = False
+    tmpconfig.max_attemps = 1
+    tmpconfig.stop_chem = config.inverter.mini_hpo.stop_chem
+    tmpconfig.stop_loss = config.inverter.mini_hpo.stop_loss
+
+    score = 0
+    avg_n_iter = 0
+    for j in range(config.inverter.mini_hpo.n_starts):
+    
+        fea_h, adj_vec = initialize(None, tmpconfig, output, j, device=device)
         
-    
-def mini_hpo(device, qm9, output, target_property, model, config):
-
-    first = True
-    configs = []
-    scores = []
-    n_iters = []
-
-    for params in random_product(config.inverter.mini_hpo.n_comb, config.inverter.inv_r, config.inverter.l_loss, config.inverter.l_const, config.inverter.starting_size):
-
-        print("Parameters:", params)
+        init_atom_fea_ext, init_adj, constraints, integer_fea, integer_adj = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)    
         
-        tmpconfig = deepcopy(config.inverter)
+        fea_h, adj_vec, n_iter_final = invert(target_property, model, fea_h, adj_vec, tmpconfig, output)
+        
+        atom_fea_ext, adj, _, _, _ = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)
+        
+        features, adj_round = round_mol(atom_fea_ext, adj, tmpconfig.n_onehot)
+        
+        r_bonds_per_atom = torch.matmul(features, torch.tensor([1.0,4.0,3.0,2.0,1.0,0.0], device=device))
+        
+        # Number of components in graph
+        
+        L = torch.diag(torch.sum((adj_round != 0),axis=0)) - (adj_round != 0)*1
+        
+        n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - int(torch.sum(features[:,tmpconfig.n_onehot]))
+        
+        if n_iter_final < tmpconfig.n_iter - 1 and n_comp < 2:
+            score += 1
+            avg_n_iter += n_iter_final
 
-        tmpconfig.inv_r = params[0]
-        tmpconfig.l_loss = params[1]
-        tmpconfig.l_const = params[2]
-        tmpconfig.starting_size = params[3]
+    if score > 0:
+        avg_n_iter = avg_n_iter/score
+    else:
+        avg_n_iter = (config.inverter.mini_hpo.n_iter-1)
+        
+    return score + 1 - avg_n_iter/(config.inverter.mini_hpo.n_iter-1)
 
-        if first:
-            tmpconfig.start_from = "random"
-            first = False
-        else:
-            tmpconfig.start_from = "saved"
-
-        tmpconfig.n_iter = config.inverter.mini_hpo.n_iter
-        tmpconfig.show_losses = False
-        tmpconfig.max_attemps = 1
-        tmpconfig.stop_chem = config.inverter.mini_hpo.stop_chem
-        tmpconfig.stop_loss = config.inverter.mini_hpo.stop_loss
-
-        score = 0
-        avg_n_iter = 0
-        for j in range(config.inverter.mini_hpo.n_starts):
     
-            fea_h, adj_vec = initialize(qm9, tmpconfig, output, j, device=device)
-            
-            init_atom_fea_ext, init_adj, constraints, integer_fea, integer_adj = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)    
-            
-            fea_h, adj_vec, n_iter_final = invert(target_property, model, fea_h, adj_vec, tmpconfig, output)
-            
-            atom_fea_ext, adj, _, _, _ = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)
-            
-            features, adj_round = round_mol(atom_fea_ext, adj, tmpconfig.n_onehot)
-            
-            r_bonds_per_atom = torch.matmul(features, torch.tensor([1.0,4.0,3.0,2.0,1.0,0.0], device=device))
-            
-            # Number of components in graph
-            
-            L = torch.diag(torch.sum((adj_round != 0),axis=0)) - (adj_round != 0)*1
-            
-            n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - int(torch.sum(features[:,tmpconfig.n_onehot]))
-            
-            if n_iter_final < tmpconfig.n_iter - 1 and n_comp < 2:
-                score += 1
-                avg_n_iter += n_iter_final
-
-        if score > 0:
-            avg_n_iter = avg_n_iter/score
-
-        n_iters.append(avg_n_iter)
-        configs.append(tmpconfig)
-        scores.append(score)
-
-    print("Final scores:", scores)
-    scores = torch.tensor(scores)
-    n_iters = torch.tensor(n_iters)
+def bayesian_hpo(device, output, target_property, model, config):
     
-    id_max = torch.argwhere(scores == torch.max(scores))
+    pbounds = {"log_inv_r": tuple(torch.log(torch.tensor(config.inverter.inv_r))),
+              "log_l_loss": tuple(torch.log(torch.tensor(config.inverter.l_loss))),
+              "log_l_const": tuple(torch.log(torch.tensor(config.inverter.l_const))),
+              "starting_size": tuple(torch.tensor(config.inverter.starting_size))}
+
+    print(pbounds)
     
-    bestconfig = configs[id_max[torch.argmin(n_iters[id_max])]]
+    init_test_params(config, output, device)
+
+    def black_box(log_inv_r, log_l_loss, log_l_const, starting_size):
+        starting_size = int(torch.round(torch.tensor(starting_size)))
+        inv_r = torch.exp(torch.tensor(log_inv_r))
+        l_loss = torch.exp(torch.tensor(log_l_loss))
+        l_const = torch.exp(torch.tensor(log_l_const))
+        return test_params(target_property, model, config, output, device, inv_r, l_loss, l_const, starting_size)
+
+    optimizer = BayesianOptimization(f=black_box,
+                                     pbounds=pbounds,
+                                     random_state=1)
+
+    import numpy as np
+    with np.errstate(divide='ignore',invalid='ignore'):
+        optimizer.maximize(init_points=2, n_iter=config.inverter.mini_hpo.n_comb)
+    
+    outconfig = deepcopy(config)
+
+    print(optimizer.max)
+
+    outconfig.inverter.inv_r         = float(torch.exp(torch.tensor(optimizer.max["params"]["log_inv_r"])))
+    outconfig.inverter.l_loss        = float(torch.exp(torch.tensor(optimizer.max["params"]["log_l_loss"])))
+    outconfig.inverter.l_const       = float(torch.exp(torch.tensor(optimizer.max["params"]["log_l_const"])))
+    outconfig.inverter.starting_size = int(torch.round(torch.tensor(optimizer.max["params"]["starting_size"])))
+
+    print("CONFIG", outconfig.inverter)
+        
+    return outconfig
+
+def random_hpo(device, output, target_property, model, config):
+    
+    list_params = random_product(config.inverter.mini_hpo.n_comb, config.inverter.inv_r, config.inverter.l_loss, config.inverter.l_const, config.inverter.starting_size)
+
+    init_test_params(config, output, device)
+    
+    scores = torch.tensor([test_params(target_property, model, config, output, device, *params) for params in list_params])
+
+    print("SCORES", scores)
+    
+    id_max = torch.argmax(scores)
 
     outconfig = deepcopy(config)
 
-    outconfig.inverter.inv_r         = bestconfig.inv_r
-    outconfig.inverter.l_loss        = bestconfig.l_loss
-    outconfig.inverter.l_const       = bestconfig.l_const
-    outconfig.inverter.starting_size = bestconfig.starting_size
+    outconfig.inverter.inv_r         = list_params[id_max][0]
+    outconfig.inverter.l_loss        = list_params[id_max][1]
+    outconfig.inverter.l_const       = list_params[id_max][2]
+    outconfig.inverter.starting_size = list_params[id_max][3]
 
     print("Best config", outconfig.inverter)
         
     return outconfig
-                
+
+
 def to_SimpleNamespace(conf_dict):
 
     return SimpleNamespace(**{k:(to_SimpleNamespace(v) if type(v) is dict else v) for k,v in conf_dict.items()})
@@ -163,12 +210,21 @@ def generate(target_property, n, output, config=None):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    if config.inverter.mini_hpo.n_comb:
-        config = mini_hpo(device, qm9, output, target_property, model, config)
+    if config.inverter.mini_hpo.method == "random":
+        config = random_hpo(device, output, target_property, model, config)
 
-        config.inverter.mini_hpo.n_comb = 0
+        config.inverter.mini_hpo.method = False
         
         yaml.dump(from_SimpleNamespace(config), open(output + "/config_optim.yml","w"))
+
+    elif config.inverter.mini_hpo.method == "bayesian":
+
+        config = bayesian_hpo(device, output, target_property, model, config)
+
+        config.inverter.mini_hpo.method = False
+        
+        yaml.dump(from_SimpleNamespace(config), open(output + "/config_optim.yml","w"))
+
         
     i=0
     j=0
