@@ -72,8 +72,6 @@ def test_params(target_property, model, config, output, device, *params):
     
         fea_h, adj_vec = initialize(None, tmpconfig, output, j, device=device)
         
-        init_atom_fea_ext, init_adj, constraints, integer_fea, integer_adj = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)    
-        
         fea_h, adj_vec, n_iter_final = invert(target_property, model, fea_h, adj_vec, tmpconfig, output)
         
         atom_fea_ext, adj, _, _, _ = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)
@@ -266,8 +264,8 @@ def generate(target_property, n, output, config=None):
 
         print(adj)
         print(atom_fea_ext)
-        
-        features, adj_round, smiles = draw_mol(atom_fea_ext, adj, config.inverter.n_onehot, output, index=i, embed=True)
+
+        features, adj_round = round_mol(atom_fea_ext, adj, config.inverter.n_onehot)
         
         atom_fea_ext_r, adj_r = prepare_data_from_features(features, adj_round, config.inverter.n_onehot)    
 
@@ -275,6 +273,8 @@ def generate(target_property, n, output, config=None):
         print("Final property value after rounding:", val)
         print("Final property value after rounding (adj_r):", model(atom_fea_ext, adj_r))
         print("Final property value after rounding (fea_r):", model(atom_fea_ext_r, adj))
+
+        features, adj_round, smiles = draw_mol(atom_fea_ext, adj, config.inverter.n_onehot, output, index=i, embed=True, text="%f"%(val), color=(0,255,0))
         
         print("ROUNDING DIFF")
         print("FEA")

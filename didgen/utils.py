@@ -5,6 +5,10 @@ import rdkit.Chem as Chem
 import torch
 import numpy as np
 import pickle
+from rdkit.Chem import rdDepictor
+from rdkit.Chem.Draw import rdMolDraw2D
+from PIL import Image, ImageFont, ImageDraw
+
 
 def round_mol(atom_fea_ext, adj, n_onehot, smooth=False, half=False):
 
@@ -27,7 +31,7 @@ def round_mol(atom_fea_ext, adj, n_onehot, smooth=False, half=False):
 
     return features, adj
 
-def draw_mol(atom_fea_ext, adj, n_onehot, output, index=0, embed=False):
+def draw_mol(atom_fea_ext, adj, n_onehot, output, index=0, embed=False, text=None, color=(255,0,0)):
 
     features, adj = round_mol(atom_fea_ext, adj, n_onehot)
     
@@ -40,6 +44,13 @@ def draw_mol(atom_fea_ext, adj, n_onehot, output, index=0, embed=False):
     
     img.save(output+"/drawings/generated_mol_%d.png"%(index))
 
+    if text is not None:
+        image = Image.open(output+"/drawings/generated_mol_%d.png"%(index))
+        font = ImageFont.load_default()
+        image_editable = ImageDraw.Draw(image)
+        image_editable.text((image.size[0] - 65,15), text, color, font=font)
+        image.save(output+"/drawings/generated_mol_%d.png"%(index))
+        
     if embed:
         Chem.SanitizeMol(mol)
         idc = EmbedMolecule(mol, 1000)
