@@ -1,4 +1,5 @@
 from .models.CGCNN import CrystalGraphConvNet as CGCNN
+from .custom_sampler import SubsetWeightedRandomSampler
 
 import torch
 from torch import optim, nn
@@ -7,6 +8,11 @@ from torch_geometric.loader import DataLoader
 import matplotlib.pyplot as plt
 import os
 import time
+from scipy.optimize import curve_fit
+import pickle
+
+def gauss(x, a, x0, sigma):
+    return a*np.exp(-(x-x0)**2/(2*sigma**2))
 
 def prepare_data(data, N, n_onehot):
     """Create explicit adjacency matrix and feature matrix from single data point"""
@@ -31,11 +37,6 @@ def prepare_data_vector(data, N, n_onehot, shuffle=False):
     """Create explicit adjacency matrix and feature matrix vector from mini-batch"""
 
     t = time.time()
-    
-    if shuffle:
-        p = torch.randperm(N)
-    else:
-        p = torch.arange(N)
         
     atom_fea = 1*data.x[:,:n_onehot]
 
@@ -49,6 +50,11 @@ def prepare_data_vector(data, N, n_onehot, shuffle=False):
 
     new_atom_fea_pieces = torch.tensor_split(atom_fea, switch_points.cpu())
 
+    if shuffle:
+        p = torch.randperm(N, device=atom_fea.device)
+    else:
+        p = torch.arange(N, device=atom_fea.device)
+    
     # This can be vectorized: https://stackoverflow.com/questions/43146266/convert-list-of-lists-with-different-lengths-to-a-numpy-array
     for i, ten in enumerate(new_atom_fea_pieces):
         new_atom_fea[i,p[:ten.shape[0]],:] = ten
@@ -59,7 +65,7 @@ def prepare_data_vector(data, N, n_onehot, shuffle=False):
     
     nn = data.batch[data.edge_index.T[:,0]]
     ij = data.edge_index.T - torch.cat([torch.zeros(1, dtype=torch.long, device=atom_fea.device), switch_points])[nn].unsqueeze(1).expand(data.edge_index.shape[1], 2)
-    
+
     adj[nn,p[ij[:,0]], p[ij[:,1]]] = data.edge_attr.matmul(bond_type)
     
     return new_atom_fea, adj
@@ -85,6 +91,43 @@ def shuffle(t):
     t = t.view(-1)[idx].view(t.size())
     return t
 
+def get_samplers(qm9, config):
+
+    y, bins = torch.histogram(qm9.data.y[:,4], 1000)
+
+    bins[0] -= 1e-12
+    bins[-1] += 1e-12
+
+    bin_idx = torch.bucketize(qm9.data.y[:,4], bins) - 1
+
+    x = (bins[1:] + bins[:-1])/2
+
+    p, pcov = curve_fit(gauss, x.detach().numpy(), y.detach().numpy())
+
+    normal_y = gauss(x,*p)
+
+    print("Closest gaussian distribution: A: %f, mu: %f, sigma:%f"%tuple(p))
+    
+    threshold = 100
+    
+    bin_weights = torch.ones(len(y))
+    bin_weights[(normal_y > threshold) & (normal_y > threshold)] = gauss(x[(normal_y > threshold) & (normal_y > threshold)],*p)/y[(normal_y > threshold) & (normal_y > threshold)]
+
+    pickle.dump(bin_weights, open("weights.pkl", "wb"))
+    
+    weights = bin_weights[bin_idx]
+
+    valid_size = config.n_data//10
+    train_size = config.n_data - valid_size
+    
+    # This will determine the valid-train split
+    if config.random_split:
+        idx = torch.randint(0, len(qm9), (train_size + valid_size,))
+    else:
+        idx = list(range(len(qm9)))
+    
+    return SubsetWeightedRandomSampler(weights, idx[:train_size]), SubsetWeightedRandomSampler(weights, idx[train_size:train_size+valid_size])
+
 def train(qm9, config, output):
     """ Training of CGCNN (vectorized) on the qm9 database """
 
@@ -105,9 +148,11 @@ def train(qm9, config, output):
     if not config.use_pretrained:
         
         print("Size of database:", len(qm9))
-    
-        qm9_loader_train = DataLoader(qm9[:config.n_data], batch_size = config.batch_size, shuffle = True)
-        qm9_loader_valid = DataLoader(qm9[config.n_data:config.n_data + config.n_data//10], batch_size = config.batch_size, shuffle = True)
+
+        train_sampler, valid_sampler = get_samplers(qm9, config)
+
+        qm9_loader_train = DataLoader(qm9, batch_size = config.batch_size, sampler=train_sampler)
+        qm9_loader_valid = DataLoader(qm9, batch_size = config.batch_size, sampler=valid_sampler)
     
         std = torch.std(qm9.data.y[:config.n_data,4])
         mean = torch.mean(qm9.data.y[:config.n_data,4])
@@ -241,14 +286,23 @@ def train(qm9, config, output):
                     epoch_targets_valid.append(target_valid)
 
         plt.figure()
-                
-        plt.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".", alpha=0.1)
+
+
+        train_targets = torch.cat(epoch_targets).cpu()
+        train_scores = torch.cat(epoch_scores).cpu().detach().numpy()
+        
+        plt.plot(train_targets, train_scores, ".", alpha=0.1)
         
         print("FINAL TRAIN RMSE", criterion(torch.cat(epoch_targets), torch.cat(epoch_scores)))
+
+        valid_targets = torch.cat(epoch_targets_valid).cpu()
+        valid_scores = torch.cat(epoch_scores_valid).cpu().detach().numpy()
         
-        plt.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(),".", alpha=0.1)
+        plt.plot(valid_targets, valid_scores,".", alpha=0.1)
         
         print("FINAL TEST RMSE", criterion(torch.cat(epoch_targets_valid), torch.cat(epoch_scores_valid)))
+
+        pickle.dump((train_targets, train_scores, valid_targets, valid_scores), open(output+"/final_performance_data.pkl","wb"))
         
         ax = plt.gca()
         

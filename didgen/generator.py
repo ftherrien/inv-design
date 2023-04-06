@@ -17,6 +17,8 @@ from numpy.random import choice
 
 torch.set_printoptions(sci_mode=False,linewidth = 300)
 
+def gauss(x, a, x0, sigma):
+    return a*np.exp(-(x-x0)**2/(2*sigma**2))
 
 def random_product(n, *args):
     sizes = torch.tensor([len(arg) for arg in args])
@@ -41,7 +43,7 @@ def mini_hpo(device, qm9, output, target_property, model, config):
 
     for params in random_product(config.inverter.mini_hpo.n_comb, config.inverter.inv_r, config.inverter.l_loss, config.inverter.l_const, config.inverter.starting_size):
 
-        print("PARAMS:", params)
+        print("Parameters:", params)
         
         tmpconfig = deepcopy(config.inverter)
 
@@ -84,7 +86,7 @@ def mini_hpo(device, qm9, output, target_property, model, config):
             
             n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - int(torch.sum(features[:,tmpconfig.n_onehot]))
             
-            if n_iter_final < tmpconfig.n_iter - 1 and n_comp < 3:
+            if n_iter_final < tmpconfig.n_iter - 1 and n_comp < 2:
                 score += 1
                 avg_n_iter += n_iter_final
 
@@ -95,7 +97,7 @@ def mini_hpo(device, qm9, output, target_property, model, config):
         configs.append(tmpconfig)
         scores.append(score)
 
-    print("SCORES", scores)
+    print("Final scores:", scores)
     scores = torch.tensor(scores)
     n_iters = torch.tensor(n_iters)
     
@@ -110,7 +112,7 @@ def mini_hpo(device, qm9, output, target_property, model, config):
     outconfig.inverter.l_const       = bestconfig.l_const
     outconfig.inverter.starting_size = bestconfig.starting_size
 
-    print("CONFIG", outconfig.inverter)
+    print("Best config", outconfig.inverter)
         
     return outconfig
                 
@@ -126,8 +128,7 @@ def from_SimpleNamespace(namespace):
         if type(v) is SimpleNamespace:
             conf_dict[k] = from_SimpleNamespace(conf_dict[k])
 
-    return conf_dict
-
+    return conf_dict    
 
 def generate(target_property, n, output, config=None):
     
@@ -148,17 +149,6 @@ def generate(target_property, n, output, config=None):
 
     if not config.property_model_training.use_pretrained:
         qm9 = datasets.QM9(output + "/dataset", pre_filter=keep_in)
-        
-        if os.path.isfile(output + "/saved_order.pickle"):
-            idx = pickle.load(open(output + "/saved_order.pickle","rb"))
-        else:
-            if config.property_model_training.random_split:
-                idx = torch.randperm(len(qm9))
-            else:
-                idx = list(range(len(qm9)))
-            pickle.dump(idx, open(output + "/saved_order.pickle","wb"))
-        
-        qm9 = qm9[idx]
     else:
         if config.inverter.start_from in ["random", "saved"]:
             qm9 = None
