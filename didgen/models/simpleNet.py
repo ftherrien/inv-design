@@ -18,7 +18,7 @@ class ConvLayer(nn.Module):
         super(ConvLayer, self).__init__()
         self.atom_fea_len = atom_fea_len
         self.sigmoid = nn.Sigmoid()
-        self.sfotplus = nn.Softplus()
+        self.softplus = nn.Softplus()
         self.bn = nn.BatchNorm1d(self.atom_fea_len)
         self.linear = nn.Linear(self.atom_fea_len, self.atom_fea_len)
         
@@ -50,7 +50,7 @@ class ConvLayer(nn.Module):
         
         bonded_fea = adj.matmul(atom_in_fea) # (N0, N, atom_fea_len)
         
-        normal_bonded_fea = self.bn1(bonded_fea)
+        normal_bonded_fea = self.bn(bonded_fea.permute((1,2,0))).permute(2,0,1)
         embed_normal_bond_fea = self.linear(normal_bonded_fea)
         out = self.sigmoid(embed_normal_bond_fea)
         #out = self.softplus(embed_normal_bond_fea)
@@ -95,6 +95,10 @@ class SimpleNet(nn.Module):
                                     for _ in range(n_conv)])
         self.smart_pooling = nn.Linear(size, 1)
 
+        self.sigmoid = nn.Sigmoid()
+
+        self.softplus = nn.Softplus()
+        
     def forward(self, atom_fea, adj):
         """
         Forward pass
@@ -126,6 +130,6 @@ class SimpleNet(nn.Module):
             
         mol_fea = self.embedding2(mol_fea) 
 
-        out = self.outlayer(self.sigmoid(mol_fea))
+        out = self.outlayer(self.softplus(mol_fea))
 
         return out

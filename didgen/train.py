@@ -1,4 +1,5 @@
 from .models.CGCNN import CrystalGraphConvNet as CGCNN
+from .models.simpleNet import SimpleNet
 from .custom_sampler import SubsetWeightedRandomSampler
 
 import torch
@@ -138,7 +139,7 @@ def train(qm9, config, output):
 
     if config.model == "SimpleNet":
         model = SimpleNet(config.n_onehot+2, config.max_size, 
-                          atom_fea_len=64, n_conv=3, h_fea_len=config.max_size, n_h=1,
+                          atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
                           classification=False).to(device)
     else:
         model = CGCNN(config.n_onehot+2,
