@@ -135,9 +135,15 @@ def train(qm9, config, output):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
     # Initialize network
-    model = CGCNN(config.n_onehot+2,
-                     atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
-                     classification=False).to(device)
+
+    if config.model == "SimpleNet":
+        model = SimpleNet(config.n_onehot+2, config.max_size, 
+                          atom_fea_len=64, n_conv=3, h_fea_len=config.max_size, n_h=1,
+                          classification=False).to(device)
+    else:
+        model = CGCNN(config.n_onehot+2,
+                      atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
+                      classification=False).to(device)
 
     if config.use_pretrained or config.transfer_learn:
         if os.path.isfile(output+'/model_weights.pth'):

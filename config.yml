@@ -10,6 +10,7 @@ property_model_training:
     noise_factor: 0.2
     transfer_learn: True
     use_pretrained: True
+    model: "SimpleNet"
 
 inverter:
     max_size: 20
