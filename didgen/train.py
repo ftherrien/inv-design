@@ -94,38 +94,51 @@ def shuffle(t):
 
 def get_samplers(qm9, config):
 
-    y, bins = torch.histogram(qm9.data.y[:,4], 1000)
+    if config.n_data > len(qm9):
+        config.n_data = len(qm9)
+        print("Warning: requested amount of data is larger than database. Setting n_data to %d"%(len(qm9)))
 
-    bins[0] -= 1e-12
-    bins[-1] += 1e-12
+    if config.n_data//1000 > 0:
+        
+        y, bins = torch.histogram(qm9.data.y[:,4], config.n_data//1000)
 
-    bin_idx = torch.bucketize(qm9.data.y[:,4], bins) - 1
+        bins[0] -= 1e-12
+        bins[-1] += 1e-12
 
-    x = (bins[1:] + bins[:-1])/2
+        bin_idx = torch.bucketize(qm9.data.y[:,4], bins) - 1
 
-    p, pcov = curve_fit(gauss, x.detach().numpy(), y.detach().numpy())
+        x = (bins[1:] + bins[:-1])/2
 
-    normal_y = gauss(x,*p)
+        p, pcov = curve_fit(gauss, x.detach().numpy(), y.detach().numpy())
 
-    print("Closest gaussian distribution: A: %f, mu: %f, sigma:%f"%tuple(p))
+        normal_y = gauss(x,*p)
+
+        print("Closest gaussian distribution: A: %f, mu: %f, sigma:%f"%tuple(p))
     
-    threshold = 100
+        threshold = 100
     
-    bin_weights = torch.ones(len(y))
-    bin_weights[(normal_y > threshold) & (normal_y > threshold)] = gauss(x[(normal_y > threshold) & (normal_y > threshold)],*p)/y[(normal_y > threshold) & (normal_y > threshold)]
+        bin_weights = torch.ones(len(y))
+        bin_weights[normal_y > threshold] = gauss(x[normal_y > threshold],*p)/y[normal_y > threshold]
 
-    pickle.dump(bin_weights, open("weights.pkl", "wb"))
+        pickle.dump(bin_weights, open("weights.pkl", "wb"))
     
-    weights = bin_weights[bin_idx]
+        weights = bin_weights[bin_idx]
 
+    else:
+
+        print("Warning: No class balancing")
+        
+        weights = torch.ones(len(qm9))
+    
+    
     valid_size = config.n_data//10
     train_size = config.n_data - valid_size
     
     # This will determine the valid-train split
     if config.random_split:
-        idx = torch.randint(0, len(qm9), (train_size + valid_size,))
+        idx = torch.randperm(len(qm9))[:train_size + valid_size]
     else:
-        idx = list(range(len(qm9)))
+        idx = torch.tensor(list(range(train_size + valid_size)))
     
     return SubsetWeightedRandomSampler(weights, idx[:train_size]), SubsetWeightedRandomSampler(weights, idx[train_size:train_size+valid_size])
 
@@ -138,9 +151,9 @@ def train(qm9, config, output):
     # Initialize network
 
     if config.model == "SimpleNet":
-        model = SimpleNet(config.n_onehot+2, config.max_size, 
-                          atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
-                          classification=False).to(device)
+        model = SimpleNet(config.n_onehot+2, 
+                          atom_fea_len=64, n_conv=3, h_fea_len=config.max_size, n_h=1,
+                          classification=False, pooling=config.pooling).to(device)
     else:
         model = CGCNN(config.n_onehot+2,
                       atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
@@ -197,7 +210,7 @@ def train(qm9, config, output):
                 # Get data to cuda if possible
                 data = data.to(device=device)
                 
-                inputs = prepare_data_vector(data, config.max_size, config.n_onehot, shuffle=True)
+                inputs = prepare_data_vector(data, config.max_size, config.n_onehot, shuffle=config.shuffle)
     
                 inputs = nudge(*inputs, config.noise_factor) # Make the model more tolerent of non integers
                 
@@ -245,8 +258,8 @@ def train(qm9, config, output):
             
             if epoch%10 == 0:
                 ax2.clear()
-                ax1.plot(epoch_loss_train[1:],'b',label = 'Train')
                 ax1.plot(epoch_loss_valid[:-1],'r',label = 'Validation')
+                ax1.plot(epoch_loss_train[1:],'b',label = 'Train')
                 ax2.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".", alpha=0.1)
                 ax2.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(), ".", alpha=0.1)
                 x = np.linspace(0,18,300)

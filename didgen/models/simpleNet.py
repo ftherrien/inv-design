@@ -63,9 +63,9 @@ class SimpleNet(nn.Module):
     Create a crystal graph convolutional neural network for predicting total
     material properties.
     """
-    def __init__(self, orig_atom_fea_len, size,
+    def __init__(self, orig_atom_fea_len,
                  atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
-                 classification=False):
+                 classification=False, pooling="sum"):
         """
         Initialize CrystalGraphConvNet.
 
@@ -89,15 +89,20 @@ class SimpleNet(nn.Module):
 
         self.embedding2 = nn.Linear(atom_fea_len, h_fea_len)
 
+        self.embedding2 = nn.Linear(atom_fea_len, h_fea_len)
+
+        self.pooling_weights = nn.Linear(atom_fea_len, 1)
+        
         self.outlayer = nn.Linear(h_fea_len, 1)
         
         self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len)
                                     for _ in range(n_conv)])
-        self.smart_pooling = nn.Linear(size, 1)
 
         self.sigmoid = nn.Sigmoid()
 
         self.softplus = nn.Softplus()
+
+        self.pooling = pooling
         
     def forward(self, atom_fea, adj):
         """
@@ -122,14 +127,34 @@ class SimpleNet(nn.Module):
 
         """
         atom_fea = self.embedding(atom_fea)
+
+        #print(atom_fea)
         
         for conv_func in self.convs:
-            atom_fea = conv_func(atom_fea, adj)
+            conv_fea = conv_func(atom_fea, adj)
 
-        mol_fea = self.smart_pooling(atom_fea.transpose(1,2)).squeeze() # Pooling: N0, N, F -> N0, F
+        if self.pooling == "sum":
+
+            mol_fea = torch.sum(conv_fea, dim=1).squeeze()
+
+        elif self.pooling == "smarter":
             
+            pooling_weights = self.pooling_weights(conv_fea).transpose(1,2) # N0, N, F -> N0, 1, N
+            
+            mol_fea = pooling_weights.matmul(conv_fea).squeeze() # pooling N0, N, F -> N0, F
+
+        elif self.pooling == "smartest":
+            
+            pooling_weights = self.sigmoid(self.pooling_weights(conv_fea).transpose(1,2)) # N0, N, F -> N0, 1, N
+            
+            mol_fea = pooling_weights.matmul(conv_fea).squeeze() # pooling N0, N, F -> N0, F
+
+        #print(mol_fea)
+        
         mol_fea = self.embedding2(mol_fea) 
 
+        #print(mol_fea)
+        
         out = self.outlayer(self.softplus(mol_fea))
-
+        
         return out
