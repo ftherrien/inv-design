@@ -49,7 +49,7 @@ def init_test_params(config, output, device):
 
 def test_params(target_property, model, config, output, device, *params):
 
-    print("PARAMS:", params)
+    print("PARAMS:", params, flush=True)
     
     tmpconfig = deepcopy(config.inverter)
 
@@ -202,7 +202,7 @@ def generate(target_property, n, output, config=None):
             
     model = train(qm9, config.property_model_training, output)
     
-    print("Starting molecule generation loop")
+    print("Starting molecule generation loop", flush=True)
 
     f = open(output + "/property_value_list.txt","w")
 
@@ -237,7 +237,7 @@ def generate(target_property, n, output, config=None):
         print("Model estimate for starting point:", model(init_atom_fea_ext, init_adj), constraints, integer_fea, integer_adj)
 
         print("Generating molecule with requested property...")
-        fea_h, adj_vec, _ = invert(target_property, model, fea_h, adj_vec, config.inverter, output)
+        fea_h, adj_vec, n_iter_final = invert(target_property, model, fea_h, adj_vec, config.inverter, output)
         
         # Printing the result ---------------------------------------------------------------------------
         
@@ -253,7 +253,7 @@ def generate(target_property, n, output, config=None):
 
         n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - int(torch.sum(features[:,config.inverter.n_onehot]))
         
-        if torch.sum(abs(r_bonds_per_atom - torch.sum(adj_round, dim=1))) > 1e-12:
+        if torch.sum(abs(r_bonds_per_atom - torch.sum(adj_round, dim=1))) > 1e-12 or n_iter_final == config.inverter.n_iter - 1:
             print("Generated molecule is not stochiometric")
             j+=1
             continue

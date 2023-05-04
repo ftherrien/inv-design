@@ -17,8 +17,7 @@ class ConvLayer(nn.Module):
         """
         super(ConvLayer, self).__init__()
         self.atom_fea_len = atom_fea_len
-        self.sigmoid = nn.Sigmoid()
-        self.softplus = nn.Softplus()
+        self.nonlinear = nn.Sigmoid()
         self.bn = nn.BatchNorm1d(self.atom_fea_len)
         self.linear = nn.Linear(self.atom_fea_len, self.atom_fea_len)
         
@@ -52,8 +51,7 @@ class ConvLayer(nn.Module):
         
         normal_bonded_fea = self.bn(bonded_fea.permute((1,2,0))).permute(2,0,1)
         embed_normal_bond_fea = self.linear(normal_bonded_fea)
-        out = self.sigmoid(embed_normal_bond_fea)
-        #out = self.softplus(embed_normal_bond_fea)
+        out = self.nonlinear(embed_normal_bond_fea)
         
         return out
 
@@ -64,7 +62,7 @@ class SimpleNet(nn.Module):
     material properties.
     """
     def __init__(self, orig_atom_fea_len,
-                 atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
+                 atom_fea_len=64, n_conv=3, layer_list=[128], n_h=1,
                  classification=False, pooling="sum"):
         """
         Initialize CrystalGraphConvNet.
@@ -87,22 +85,22 @@ class SimpleNet(nn.Module):
     
         self.embedding = nn.Linear(orig_atom_fea_len, atom_fea_len)
 
-        self.embedding2 = nn.Linear(atom_fea_len, h_fea_len)
-
-        self.embedding2 = nn.Linear(atom_fea_len, h_fea_len)
-
         self.pooling_weights = nn.Linear(atom_fea_len, 1)
-        
-        self.outlayer = nn.Linear(h_fea_len, 1)
         
         self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len)
                                     for _ in range(n_conv)])
 
-        self.sigmoid = nn.Sigmoid()
-
-        self.softplus = nn.Softplus()
+        self.nonlinear = nn.Softplus()
 
         self.pooling = pooling
+
+        seq = (nn.Linear(atom_fea_len, layer_list[0]), self.nonlinear)
+        for i in range(len(layer_list)-1):
+            seq += (nn.Linear(layer_list[i], layer_list[i+1]), self.nonlinear)
+        seq += (nn.Linear(layer_list[-1], 1), self.nonlinear)
+
+        self.deep = nn.Sequential(*seq)
+
         
     def forward(self, atom_fea, adj):
         """
@@ -145,16 +143,8 @@ class SimpleNet(nn.Module):
 
         elif self.pooling == "smartest":
             
-            pooling_weights = self.sigmoid(self.pooling_weights(conv_fea).transpose(1,2)) # N0, N, F -> N0, 1, N
+            pooling_weights = self.nonlinear(self.pooling_weights(conv_fea).transpose(1,2)) # N0, N, F -> N0, 1, N
             
             mol_fea = pooling_weights.matmul(conv_fea).squeeze() # pooling N0, N, F -> N0, F
 
-        #print(mol_fea)
-        
-        mol_fea = self.embedding2(mol_fea) 
-
-        #print(mol_fea)
-        
-        out = self.outlayer(self.softplus(mol_fea))
-        
-        return out
+        return self.deep(mol_fea)

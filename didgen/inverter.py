@@ -44,9 +44,11 @@ def start_from(data, config):
         
     return atom_fea, adj_vec
 
-def smooth_round(x):
-    return (396*torch.pi*x - 225*torch.sin(2*torch.pi*x) + 45*torch.sin(4*torch.pi*x) - 5*torch.sin(6*torch.pi*x))/(396*torch.pi)
-    # return torch.round(x) + 0.1*(x - torch.round(x))
+def smooth_round(x, method="step"):
+    if method=="sin":
+        return (396*torch.pi*x - 225*torch.sin(2*torch.pi*x) + 45*torch.sin(4*torch.pi*x) - 5*torch.sin(6*torch.pi*x))/(396*torch.pi)
+    elif method=="step":
+        return torch.round(x) + 0.1*(x - torch.round(x))
 
 def max_round(x):
 
@@ -82,7 +84,7 @@ def weights_to_model_inputs(fea_h, adj_vec, config):
     
     adj = adj + adj.transpose(0,1)
 
-    adj = smooth_round(adj)
+    adj = smooth_round(adj, method=config.rounding)
     
     r_features, r_adj = round_mol(atom_fea_ext, adj, config.n_onehot)
 
@@ -308,7 +310,7 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
             plt.plot(g2s, color="green")
             plt.pause(0.1)
             draw_mol(atom_fea_ext, adj, config.n_onehot, output, text="%f"%(score), color=(int(255*(float(loss/score))),int(255*(1-float(loss/score))),0))
-
+            
     if config.show_losses:
         plt.ioff()
 

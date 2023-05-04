@@ -98,7 +98,7 @@ def get_samplers(qm9, config):
         config.n_data = len(qm9)
         print("Warning: requested amount of data is larger than database. Setting n_data to %d"%(len(qm9)))
 
-    if config.n_data//1000 > 0:
+    if config.n_data//1000 > 2:
         
         y, bins = torch.histogram(qm9.data.y[:,4], config.n_data//1000)
 
@@ -152,7 +152,7 @@ def train(qm9, config, output):
 
     if config.model == "SimpleNet":
         model = SimpleNet(config.n_onehot+2, 
-                          atom_fea_len=64, n_conv=3, h_fea_len=config.max_size, n_h=1,
+                          atom_fea_len=64, n_conv=3, layer_list=config.layer_list, n_h=1,
                           classification=False, pooling=config.pooling).to(device)
     else:
         model = CGCNN(config.n_onehot+2,
@@ -171,8 +171,8 @@ def train(qm9, config, output):
 
         train_sampler, valid_sampler = get_samplers(qm9, config)
 
-        qm9_loader_train = DataLoader(qm9, batch_size = config.batch_size, sampler=train_sampler)
-        qm9_loader_valid = DataLoader(qm9, batch_size = config.batch_size, sampler=valid_sampler)
+        qm9_loader_train = DataLoader(qm9[:config.n_data-config.n_data//10], batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
+        qm9_loader_valid = DataLoader(qm9[config.n_data-config.n_data//10:config.n_data], batch_size = config.batch_size, shuffle=True) #sampler=valid_sampler)
     
         std = torch.std(qm9.data.y[:config.n_data,4])
         mean = torch.mean(qm9.data.y[:config.n_data,4])
