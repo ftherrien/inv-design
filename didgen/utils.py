@@ -58,7 +58,12 @@ def draw_mol(atom_fea_ext, adj, n_onehot, output, index=0, embed=False, text=Non
             UFFOptimizeMolecule(mol)
             MolToXYZFile(mol, output+"/xyzs/generated_mol_%d.xyz"%(index),idc)
         else:
-            print("Embeding failed!")
+            idc = EmbedMolecule(mol, 1000, forceTol=0.1)
+            if idc != -1:
+                UFFOptimizeMolecule(mol)
+                MolToXYZFile(mol, output+"/xyzs/generated_mol_%d.xyz"%(index),idc)
+            else:
+                print("Embeding failed!")
             
     return features, adj, smiles
 
@@ -107,3 +112,33 @@ def MolFromGraph(features, adjacency_matrix, n_onehot):
     mol = mol.GetMol()            
 
     return mol
+
+def GraphFromMol(mol, N):
+
+    elems = np.array(["H","C","N","O","F"])
+
+    #FEA
+    fea_small = []
+    for atom in mol.GetAtoms():
+        fea_small.append(((elems == atom.GetSymbol())*1).tolist())
+
+    fea_small = torch.tensor(fea_small)
+
+    fea = torch.zeros((N,len(elems)+1))
+
+    fea[fea_small.shape[0]:,-1] = 1
+
+    fea[:fea_small.shape[0],:len(elems)] = fea_small
+    
+    # ADJ
+    adj = torch.zeros((N, N))
+    
+    
+    for b in mol.GetBonds():
+        i = b.GetBeginAtomIdx()
+        j = b.GetEndAtomIdx()
+
+        adj[i,j] = b.GetBondTypeAsDouble()
+        adj[j,i] = b.GetBondTypeAsDouble()
+ 
+    return fea, adj
