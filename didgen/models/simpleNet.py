@@ -5,7 +5,7 @@ class ConvLayer(nn.Module):
     """
     Convolutional operation on graphs
     """
-    def __init__(self, atom_fea_len):
+    def __init__(self, atom_fea_len, dropout=None):
         """
         Initialize ConvLayer.
 
@@ -20,7 +20,12 @@ class ConvLayer(nn.Module):
         self.nonlinear = nn.Sigmoid()
         self.bn = nn.BatchNorm1d(self.atom_fea_len)
         self.linear = nn.Linear(self.atom_fea_len, self.atom_fea_len)
-        
+
+        if dropout is not None:
+            self.dplayer = nn.Dropout(dropout)
+            self.dropout = True
+        else:
+            self.dropout = False
 
     def forward(self, atom_in_fea, adj):
         """
@@ -48,8 +53,9 @@ class ConvLayer(nn.Module):
         N = atom_in_fea.shape[1]
         
         bonded_fea = adj.matmul(atom_in_fea) # (N0, N, atom_fea_len)
-        
         normal_bonded_fea = self.bn(bonded_fea.permute((1,2,0))).permute(2,0,1)
+        if self.dropout:
+            normal_bonded_fea = self.dplayer(normal_bonded_fea)
         embed_normal_bond_fea = self.linear(normal_bonded_fea)
         out = self.nonlinear(embed_normal_bond_fea)
         
@@ -63,7 +69,7 @@ class SimpleNet(nn.Module):
     """
     def __init__(self, orig_atom_fea_len,
                  atom_fea_len=64, n_conv=3, layer_list=[128], n_h=1,
-                 classification=False, pooling="sum"):
+                 classification=False, pooling="sum", dropout=None):
         """
         Initialize CrystalGraphConvNet.
 
@@ -87,20 +93,25 @@ class SimpleNet(nn.Module):
 
         self.pooling_weights = nn.Linear(atom_fea_len, 1)
         
-        self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len)
+        self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len, dropout=dropout)
                                     for _ in range(n_conv)])
 
         self.nonlinear = nn.Softplus()
 
         self.pooling = pooling
 
-        seq = (nn.Linear(atom_fea_len, layer_list[0]), self.nonlinear)
-        for i in range(len(layer_list)-1):
-            seq += (nn.Linear(layer_list[i], layer_list[i+1]), self.nonlinear)
-        seq += (nn.Linear(layer_list[-1], 1), self.nonlinear)
-
+        if dropout is None:
+            seq = (nn.Linear(atom_fea_len, layer_list[0]), self.nonlinear)
+            for i in range(len(layer_list)-1):
+                seq += (nn.Linear(layer_list[i], layer_list[i+1]), self.nonlinear)
+            seq += (nn.Linear(layer_list[-1], 1), self.nonlinear)
+        else:
+            seq = (nn.Dropout(dropout), nn.Linear(atom_fea_len, layer_list[0]), self.nonlinear)
+            for i in range(len(layer_list)-1):
+                seq += (nn.Dropout(dropout), nn.Linear(layer_list[i], layer_list[i+1]), self.nonlinear)
+            seq += (nn.Dropout(dropout), nn.Linear(layer_list[-1], 1), self.nonlinear)
+             
         self.deep = nn.Sequential(*seq)
-
         
     def forward(self, atom_fea, adj):
         """
@@ -124,27 +135,25 @@ class SimpleNet(nn.Module):
           Atom hidden features after convolution
 
         """
-        atom_fea = self.embedding(atom_fea)
-
-        #print(atom_fea)
+        conv_fea = self.embedding(atom_fea)
         
         for conv_func in self.convs:
-            conv_fea = conv_func(atom_fea, adj)
+            conv_fea = conv_func(conv_fea, adj)
 
         if self.pooling == "sum":
 
-            mol_fea = torch.sum(conv_fea, dim=1).squeeze()
+            mol_fea = torch.sum(conv_fea, dim=1).squeeze(dim=1)
 
         elif self.pooling == "smarter":
             
             pooling_weights = self.pooling_weights(conv_fea).transpose(1,2) # N0, N, F -> N0, 1, N
             
-            mol_fea = pooling_weights.matmul(conv_fea).squeeze() # pooling N0, N, F -> N0, F
+            mol_fea = pooling_weights.matmul(conv_fea).squeeze(dim=1) # pooling N0, N, F -> N0, F
 
         elif self.pooling == "smartest":
             
             pooling_weights = self.nonlinear(self.pooling_weights(conv_fea).transpose(1,2)) # N0, N, F -> N0, 1, N
             
-            mol_fea = pooling_weights.matmul(conv_fea).squeeze() # pooling N0, N, F -> N0, F
+            mol_fea = pooling_weights.matmul(conv_fea).squeeze(dim=1) # pooling N0, N, F -> N0, F
 
         return self.deep(mol_fea)

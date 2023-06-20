@@ -141,7 +141,7 @@ def initialize(qm9, config, output, i, device="cpu"):
 
         os.makedirs(output + "/save_random", exist_ok=True)
         
-        adj_vec = torch.randn((N*(N-1)//2), device=device)
+        adj_vec = torch.randn((N*(N-1)//2), device=device)*config.bond_multiplier
         
         fea_h = torch.randn((1, N, config.n_onehot+1), device=device)
 

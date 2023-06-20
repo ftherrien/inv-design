@@ -1,7 +1,7 @@
 from .models.CGCNN import CrystalGraphConvNet as CGCNN
 from .models.simpleNet import SimpleNet
 from .custom_sampler import SubsetWeightedRandomSampler
-
+from .custom_dataset import QM9like
 import torch
 from torch import optim, nn
 import numpy as np
@@ -152,11 +152,11 @@ def train(qm9, config, output):
 
     if config.model == "SimpleNet":
         model = SimpleNet(config.n_onehot+2, 
-                          atom_fea_len=64, n_conv=3, layer_list=config.layer_list, n_h=1,
-                          classification=False, pooling=config.pooling).to(device)
+                          atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, layer_list=config.layer_list, n_h=1,
+                          classification=False, pooling=config.pooling, dropout = config.dropout).to(device)
     else:
         model = CGCNN(config.n_onehot+2,
-                      atom_fea_len=64, n_conv=3, h_fea_len=128, n_h=1,
+                      atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, h_fea_len=128, n_h=1,
                       classification=False).to(device)
 
     if config.use_pretrained or config.transfer_learn:
@@ -171,15 +171,28 @@ def train(qm9, config, output):
 
         train_sampler, valid_sampler = get_samplers(qm9, config)
 
-        qm9_loader_train = DataLoader(qm9[:config.n_data-config.n_data//10], batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
-        qm9_loader_valid = DataLoader(qm9[config.n_data-config.n_data//10:config.n_data], batch_size = config.batch_size, shuffle=True) #sampler=valid_sampler)
+        qm9 = qm9[torch.randperm(len(qm9))]
+
+        qm9_gen = QM9like(output+"/gen_dataset", raw_name="generated_dataset")
+        
+        ogb = QM9like(output+"/ogb_dataset", raw_name="ogb")
+
+        ogb = ogb[torch.randperm(len(ogb))]
+
+        both_train = torch.utils.data.ConcatDataset([qm9[:len(qm9)-len(qm9)//10], ogb[:len(ogb)-len(ogb)//10]])
+        both_valid = torch.utils.data.ConcatDataset([qm9[len(qm9)-len(qm9)//10:], ogb[len(ogb)-len(ogb)//10:]])
+        
+        qm9_loader_train = DataLoader(both_train, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
+        qm9_loader_valid = DataLoader(both_valid, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
+
+        qm9_loader_gen = DataLoader(qm9_gen, batch_size = len(qm9_gen), shuffle=True) #sampler=valid_sampler)
     
         std = torch.std(qm9.data.y[:config.n_data,4])
         mean = torch.mean(qm9.data.y[:config.n_data,4])
         
         # Loss and optimizer
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+        criterion = nn.L1Loss()
+        optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
         #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=20)
         
         # Initialize plot
@@ -190,14 +203,16 @@ def train(qm9, config, output):
         ax1.axhline(std, color = 'k', label = 'STD')
         ax1.plot([],'b',label = 'Train')
         ax1.plot([],'r',label = 'Validation')
+        ax1.plot([],'orange',label = 'Generated')
         ax1.set_yscale("log")
         ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('RMSE (eV)')
+        ax1.set_ylabel('MAE (eV)')
         ax1.legend(loc=2)
         
         # Train Network
         epoch_loss_train = []
         epoch_loss_valid = []
+        epoch_loss_gen = []
         training_time = time.time()
         for epoch in range(config.num_epochs):
     
@@ -217,7 +232,7 @@ def train(qm9, config, output):
                 # forward
                 scores = model(*inputs).squeeze()
                 
-                target = data.y[:,3]-data.y[:,2]
+                target = data.y[:,4]
     
                 epoch_scores.append(scores.detach())
                 epoch_targets.append(target)
@@ -243,25 +258,45 @@ def train(qm9, config, output):
                     
                     # forward
                     scores_valid = model(*prepare_data_vector(data, config.max_size, config.n_onehot)).squeeze()
-                    target_valid = data.y[:,3]-data.y[:,2]
+                    target_valid = data.y[:,4]
                 
                     epoch_scores_valid.append(scores_valid)
                     epoch_targets_valid.append(target_valid)
                     
                     loss = criterion(scores_valid, target_valid)
                     epoch_loss_valid[-1] += float(loss)
+
+                epoch_loss_gen.append(0)
+                epoch_scores_gen = []
+                epoch_targets_gen = []
+                for batch_idx, data in enumerate(qm9_loader_gen):
+                    # Get data to cuda if possible
+                    data = data.to(device=device)
+                    
+                    # forward
+                    scores_gen = model(*prepare_data_vector(data, config.max_size, config.n_onehot)).squeeze()
+                    target_gen = data.y[:,4]
+                
+                    epoch_scores_gen.append(scores_gen)
+                    epoch_targets_gen.append(target_gen)
+                    
+                    loss = criterion(scores_gen, target_gen)
+                    epoch_loss_gen[-1] += float(loss)
                 
             epoch_loss_train[-1] = epoch_loss_train[-1]/len(qm9_loader_train)
             epoch_loss_valid[-1] = epoch_loss_valid[-1]/len(qm9_loader_valid)
-            print(epoch, "AVG TRAIN RMSE", float(epoch_loss_train[-1]), "AVG VALID RMSE", float(epoch_loss_valid[-1]), flush=True)
+            epoch_loss_gen[-1] = epoch_loss_gen[-1]/len(qm9_loader_gen)
+            print(epoch, "AVG TRAIN MAE", float(epoch_loss_train[-1]), "AVG VALID MAE", float(epoch_loss_valid[-1]), "AVG GEN MAE", float(epoch_loss_gen[-1]), flush=True)
             #scheduler.step(epoch_loss_train[-1])
             
             if epoch%10 == 0:
                 ax2.clear()
                 ax1.plot(epoch_loss_valid[:-1],'r',label = 'Validation')
+                ax1.plot(epoch_loss_gen[:-1],'orange',label = 'Generated')
                 ax1.plot(epoch_loss_train[1:],'b',label = 'Train')
                 ax2.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".", alpha=0.1)
                 ax2.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(), ".", alpha=0.1)
+                ax2.plot(torch.cat(epoch_targets_gen).cpu(), torch.cat(epoch_scores_gen).cpu().detach().numpy(), ".", alpha=0.1)
                 x = np.linspace(0,18,300)
                 ax2.fill_between(x, x+1, x-1, color="gray", alpha=0.1)
                 ax2.plot(x, x, color="k", alpha=0.5)
@@ -286,7 +321,7 @@ def train(qm9, config, output):
                 inputs = prepare_data_vector(data, config.max_size, config.n_onehot, shuffle=True)
                             
                 scores = model(*inputs).squeeze()
-                target = data.y[:,3]-data.y[:,2]
+                target = data.y[:,4]
                 
                 epoch_scores.append(scores)
                 epoch_targets.append(target)
@@ -300,10 +335,23 @@ def train(qm9, config, output):
                 
                     # forward
                     scores_valid = model(*prepare_data_vector(data, config.max_size, config.n_onehot)).squeeze()
-                    target_valid = data.y[:,3]-data.y[:,2]
+                    target_valid = data.y[:,4]
             
                     epoch_scores_valid.append(scores_valid)
                     epoch_targets_valid.append(target_valid)
+
+                epoch_scores_gen = []
+                epoch_targets_gen = []
+                for batch_idx, data in enumerate(qm9_loader_gen):
+                    # Get data to cuda if possible
+                    data = data.to(device=device)
+                
+                    # forward
+                    scores_gen = model(*prepare_data_vector(data, config.max_size, config.n_onehot)).squeeze()
+                    target_gen = data.y[:,4]
+            
+                    epoch_scores_gen.append(scores_gen)
+                    epoch_targets_gen.append(target_gen)
 
         plt.figure()
 
@@ -313,15 +361,22 @@ def train(qm9, config, output):
         
         plt.plot(train_targets, train_scores, ".", alpha=0.1)
         
-        print("FINAL TRAIN RMSE", criterion(torch.cat(epoch_targets), torch.cat(epoch_scores)))
+        print("FINAL TRAIN MAE", criterion(torch.cat(epoch_targets), torch.cat(epoch_scores)))
 
         valid_targets = torch.cat(epoch_targets_valid).cpu()
         valid_scores = torch.cat(epoch_scores_valid).cpu().detach().numpy()
         
         plt.plot(valid_targets, valid_scores,".", alpha=0.1)
         
-        print("FINAL TEST RMSE", criterion(torch.cat(epoch_targets_valid), torch.cat(epoch_scores_valid)))
+        print("FINAL VALID MAE", criterion(torch.cat(epoch_targets_valid), torch.cat(epoch_scores_valid)))
 
+        gen_targets = torch.cat(epoch_targets_gen).cpu()
+        gen_scores = torch.cat(epoch_scores_gen).cpu().detach().numpy()
+        
+        plt.plot(gen_targets, gen_scores,".", alpha=0.1)
+        
+        print("FINAL GEN MAE", criterion(torch.cat(epoch_targets_gen), torch.cat(epoch_scores_gen)))
+        
         pickle.dump((train_targets, train_scores, valid_targets, valid_scores), open(output+"/final_performance_data.pkl","wb"))
         
         ax = plt.gca()
