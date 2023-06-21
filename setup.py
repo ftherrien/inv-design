@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(name='didgen',
       version='0.0.0',
@@ -7,7 +7,7 @@ setup(name='didgen',
       author='Felix Therrien',
       author_email='felix.therrien@gmail.com',
       license='MIT',
-      packages=['didgen'],
+      packages=find_packages(),
       python_requires='>=3',
       install_requires=[
           'numpy',
