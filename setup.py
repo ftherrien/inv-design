@@ -16,5 +16,7 @@ setup(name='didgen',
           'matplotlib',
           'rdkit',
           'pyyaml',
+          'bayesian-optimization',
+          'torch_geometric',
       ],
       scripts=['didgenerate'],)
