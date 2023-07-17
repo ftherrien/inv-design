@@ -2,8 +2,11 @@ from .models.CGCNN import CrystalGraphConvNet as CGCNN
 from .models.simpleNet import SimpleNet
 from .custom_sampler import SubsetWeightedRandomSampler
 from .custom_dataset import QM9like
+
+from torch_geometric.datasets import QM9
 import torch
 from torch import optim, nn
+from torch.utils.data import Subset
 import numpy as np
 from torch_geometric.loader import DataLoader
 import matplotlib.pyplot as plt
@@ -92,20 +95,20 @@ def shuffle(t):
     t = t.view(-1)[idx].view(t.size())
     return t
 
-def get_samplers(qm9, config):
+def get_samplers(dataset, config):
 
-    if config.n_data > len(qm9):
-        config.n_data = len(qm9)
-        print("Warning: requested amount of data is larger than database. Setting n_data to %d"%(len(qm9)))
+    if config.n_data > len(dataset):
+        config.n_data = len(dataset)
+        print("Warning: requested amount of data is larger than database. Setting n_data to %d"%(len(dataset)))
 
     if config.n_data//1000 > 2:
         
-        y, bins = torch.histogram(qm9.data.y[:,4], config.n_data//1000)
+        y, bins = torch.histogram(dataset.data.y[:,4], config.n_data//1000)
 
         bins[0] -= 1e-12
         bins[-1] += 1e-12
 
-        bin_idx = torch.bucketize(qm9.data.y[:,4], bins) - 1
+        bin_idx = torch.bucketize(dataset.data.y[:,4], bins) - 1
 
         x = (bins[1:] + bins[:-1])/2
 
@@ -128,7 +131,7 @@ def get_samplers(qm9, config):
 
         print("Warning: No class balancing")
         
-        weights = torch.ones(len(qm9))
+        weights = torch.ones(len(dataset))
     
     
     valid_size = config.n_data//10
@@ -136,14 +139,13 @@ def get_samplers(qm9, config):
     
     # This will determine the valid-train split
     if config.random_split:
-        idx = torch.randperm(len(qm9))[:train_size + valid_size]
+        idx = torch.randperm(len(dataset))[:train_size + valid_size]
     else:
         idx = torch.tensor(list(range(train_size + valid_size)))
     
     return SubsetWeightedRandomSampler(weights, idx[:train_size]), SubsetWeightedRandomSampler(weights, idx[train_size:train_size+valid_size])
 
-def train(qm9, config, output):
-    """ Training of CGCNN (vectorized) on the qm9 database """
+def train(config, output):
 
     # Set device cuda for GPU if it's available otherwise run on the CPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -167,28 +169,47 @@ def train(qm9, config, output):
     
     if not config.use_pretrained:
         
-        print("Size of database:", len(qm9))
+        def keep_in(data):
+            return len(data.x) <= config.max_size
 
-        train_sampler, valid_sampler = get_samplers(qm9, config)
-
-        qm9 = qm9[torch.randperm(len(qm9))]
-
-        qm9_gen = QM9like(output+"/gen_dataset", raw_name="generated_dataset")
+        gen = QM9like(output+"/gen_dataset", raw_name="generated_dataset", pre_filter=keep_in)
+        gen = gen[torch.randperm(len(gen))]
         
-        ogb = QM9like(output+"/ogb_dataset", raw_name="ogb")
-
-        ogb = ogb[torch.randperm(len(ogb))]
-
-        both_train = torch.utils.data.ConcatDataset([qm9[:len(qm9)-len(qm9)//10], ogb[:len(ogb)-len(ogb)//10]])
-        both_valid = torch.utils.data.ConcatDataset([qm9[len(qm9)-len(qm9)//10:], ogb[len(ogb)-len(ogb)//10:]])
+        dataset_dict = dict()
         
-        qm9_loader_train = DataLoader(both_train, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
-        qm9_loader_valid = DataLoader(both_valid, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
+        if "qm9" in config.datasets:
+            
+            dataset_dict["qm9"] = QM9(output + "/dataset", pre_filter=keep_in)
+            dataset_dict["qm9"] = dataset_dict["qm9"][torch.randperm(len(dataset_dict["qm9"]))]
 
-        qm9_loader_gen = DataLoader(qm9_gen, batch_size = len(qm9_gen), shuffle=True) #sampler=valid_sampler)
-    
-        std = torch.std(qm9.data.y[:config.n_data,4])
-        mean = torch.mean(qm9.data.y[:config.n_data,4])
+        if "gen" in config.datasets:
+
+            dataset_dict["gen"] = gen
+
+        if "ogb" in config.datasets:
+            
+            dataset_dict["ogb"] = QM9like(output+"/ogb_dataset", raw_name="ogb", pre_filter=keep_in)
+            dataset_dict["ogb"] = dataset_dict["ogb"][torch.randperm(len(dataset_dict["ogb"]))]
+
+        if "cep" in config.datasets:
+            
+            dataset_dict["cep"] = QM9like(output+"/cep_dataset", raw_name="cep", pre_filter=keep_in)
+            dataset_dict["cep"] = dataset_dict["cep"][torch.randperm(len(dataset_dict["cep"]))]
+
+        all_train = torch.utils.data.ConcatDataset([data[:len(data)-len(data)//10] for data in dataset_dict.values()])
+        all_valid = torch.utils.data.ConcatDataset([data[len(data)-len(data)//10:] for data in dataset_dict.values()])
+
+        if config.n_data < len(all_train) + len(all_valid):
+            
+            all_train = Subset(all_train, torch.randperm(config.n_data - config.n_data//10))
+            all_valid = Subset(all_valid, torch.randperm(config.n_data//10))
+        
+        print("Size of database:", len(all_train) + len(all_valid))
+        
+        loader_train = DataLoader(all_train, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
+        loader_valid = DataLoader(all_valid, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
+
+        loader_gen = DataLoader(gen, batch_size = len(gen), shuffle=True) #sampler=valid_sampler)
         
         # Loss and optimizer
         criterion = nn.L1Loss()
@@ -200,7 +221,6 @@ def train(qm9, config, output):
         fig = plt.figure()
         ax1 = fig.add_subplot(1,2,1)
         ax2 = fig.add_subplot(1,2,2)
-        ax1.axhline(std, color = 'k', label = 'STD')
         ax1.plot([],'b',label = 'Train')
         ax1.plot([],'r',label = 'Validation')
         ax1.plot([],'orange',label = 'Generated')
@@ -221,7 +241,7 @@ def train(qm9, config, output):
             epoch_loss_train.append(0)
             epoch_scores = []
             epoch_targets = []
-            for batch_idx, data in enumerate(qm9_loader_train):
+            for batch_idx, data in enumerate(loader_train):
                 # Get data to cuda if possible
                 data = data.to(device=device)
                 
@@ -236,8 +256,11 @@ def train(qm9, config, output):
     
                 epoch_scores.append(scores.detach())
                 epoch_targets.append(target)
+
                 
-                loss = criterion(scores, target)
+                
+                #loss = criterion(scores, target)
+                loss = torch.mean(abs(scores - target)*(0.1 + (target - torch.mean(target,dim=0))**2))
                 epoch_loss_train[-1] += float(loss)
                 
                 # backward
@@ -252,7 +275,7 @@ def train(qm9, config, output):
                 epoch_loss_valid.append(0)
                 epoch_scores_valid = []
                 epoch_targets_valid = []
-                for batch_idx, data in enumerate(qm9_loader_valid):
+                for batch_idx, data in enumerate(loader_valid):
                     # Get data to cuda if possible
                     data = data.to(device=device)
                     
@@ -269,7 +292,7 @@ def train(qm9, config, output):
                 epoch_loss_gen.append(0)
                 epoch_scores_gen = []
                 epoch_targets_gen = []
-                for batch_idx, data in enumerate(qm9_loader_gen):
+                for batch_idx, data in enumerate(loader_gen):
                     # Get data to cuda if possible
                     data = data.to(device=device)
                     
@@ -283,9 +306,9 @@ def train(qm9, config, output):
                     loss = criterion(scores_gen, target_gen)
                     epoch_loss_gen[-1] += float(loss)
                 
-            epoch_loss_train[-1] = epoch_loss_train[-1]/len(qm9_loader_train)
-            epoch_loss_valid[-1] = epoch_loss_valid[-1]/len(qm9_loader_valid)
-            epoch_loss_gen[-1] = epoch_loss_gen[-1]/len(qm9_loader_gen)
+            epoch_loss_train[-1] = epoch_loss_train[-1]/len(loader_train)
+            epoch_loss_valid[-1] = epoch_loss_valid[-1]/len(loader_valid)
+            epoch_loss_gen[-1] = epoch_loss_gen[-1]/len(loader_gen)
             print(epoch, "AVG TRAIN MAE", float(epoch_loss_train[-1]), "AVG VALID MAE", float(epoch_loss_valid[-1]), "AVG GEN MAE", float(epoch_loss_gen[-1]), flush=True)
             #scheduler.step(epoch_loss_train[-1])
             
@@ -294,6 +317,7 @@ def train(qm9, config, output):
                 ax1.plot(epoch_loss_valid[:-1],'r',label = 'Validation')
                 ax1.plot(epoch_loss_gen[:-1],'orange',label = 'Generated')
                 ax1.plot(epoch_loss_train[1:],'b',label = 'Train')
+                # ax1.axhline(std, color = 'k', label = 'STD')
                 ax2.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".", alpha=0.1)
                 ax2.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(), ".", alpha=0.1)
                 ax2.plot(torch.cat(epoch_targets_gen).cpu(), torch.cat(epoch_scores_gen).cpu().detach().numpy(), ".", alpha=0.1)
@@ -314,7 +338,7 @@ def train(qm9, config, output):
         with torch.no_grad():
             epoch_scores = []
             epoch_targets = []
-            for batch_idx, data in enumerate(qm9_loader_train):
+            for batch_idx, data in enumerate(loader_train):
                 # Get data to cuda if possible
                 data = data.to(device=device)
                 
@@ -329,7 +353,7 @@ def train(qm9, config, output):
             if config.num_epochs == 0:
                 epoch_scores_valid = []
                 epoch_targets_valid = []
-                for batch_idx, data in enumerate(qm9_loader_valid):
+                for batch_idx, data in enumerate(loader_valid):
                     # Get data to cuda if possible
                     data = data.to(device=device)
                 
@@ -342,7 +366,7 @@ def train(qm9, config, output):
 
                 epoch_scores_gen = []
                 epoch_targets_gen = []
-                for batch_idx, data in enumerate(qm9_loader_gen):
+                for batch_idx, data in enumerate(loader_gen):
                     # Get data to cuda if possible
                     data = data.to(device=device)
                 

@@ -131,15 +131,17 @@ class QM9like(InMemoryDataset):
     raw_url = ""
     raw_url2 = ""
     processed_url = ""
- 
 
+    default_type_list = types = ['H', 'C', 'N', 'O', 'F']
+    
     def __init__(self, root: str, transform: Optional[Callable] = None,
                  pre_transform: Optional[Callable] = None,
-                 pre_filter: Optional[Callable] = None, raw_name="generated_dataset"):
+                 pre_filter: Optional[Callable] = None, raw_name="generated_dataset", type_list = default_type_list):
         print(root, transform, pre_transform, pre_filter)
         self.raw_name = raw_name
         super().__init__(root, transform, pre_transform, pre_filter)
         self.data, self.slices = torch.load(self.processed_paths[0])
+        self.types = {n: i for i,n in enumerate(type_list)}
 
     def mean(self, target: int) -> float:
         y = torch.cat([self.get(i).y for i in range(len(self))], dim=0)
@@ -205,7 +207,6 @@ class QM9like(InMemoryDataset):
             torch.save(self.collate(data_list), self.processed_paths[0])
             return
 
-        types = {'H': 0, 'C': 1, 'N': 2, 'O': 3, 'F': 4}
         bonds = {BT.SINGLE: 0, BT.DOUBLE: 1, BT.TRIPLE: 2, BT.AROMATIC: 3}
 
         with open(self.raw_paths[1], 'r') as f:
@@ -235,7 +236,7 @@ class QM9like(InMemoryDataset):
             sp3 = []
             num_hs = []
             for atom in mol.GetAtoms():
-                type_idx.append(types[atom.GetSymbol()])
+                type_idx.append(self.types[atom.GetSymbol()])
                 atomic_number.append(atom.GetAtomicNum())
                 aromatic.append(1 if atom.GetIsAromatic() else 0)
                 hybridization = atom.GetHybridization()
@@ -265,7 +266,7 @@ class QM9like(InMemoryDataset):
             hs = (z == 1).to(torch.float)
             num_hs = scatter(hs[row], col, dim_size=N, reduce='sum').tolist()
 
-            x1 = one_hot(torch.tensor(type_idx), num_classes=len(types))
+            x1 = one_hot(torch.tensor(type_idx), num_classes=len(self.types))
             x2 = torch.tensor([atomic_number, aromatic, sp, sp2, sp3, num_hs],
                               dtype=torch.float).t().contiguous()
             x = torch.cat([x1, x2], dim=-1)

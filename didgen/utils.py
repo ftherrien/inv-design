@@ -31,27 +31,34 @@ def round_mol(atom_fea_ext, adj, n_onehot, smooth=False, half=False):
 
     return features, adj
 
-def draw_mol(atom_fea_ext, adj, n_onehot, output, index=0, embed=False, text=None, color=(255,0,0)):
+def draw_mol(atom_fea_ext, adj, n_onehot, output, index=None, embed=False, text=None, color=(255,0,0)):
 
     features, adj = round_mol(atom_fea_ext, adj, n_onehot)
     
     mol = MolFromGraph(features, adj, n_onehot)
 
-    pickle.dump(mol,open(output+"/xyzs/generated_mol_%d.pickle"%(index),"wb"))
+    if index is not None:
+        pickle.dump(mol,open(output+"/xyzs/generated_mol_%d.pickle"%(index),"wb"))
     
     img = MolToImage(mol)
     smiles = MolToSmiles(mol)
-    
-    img.save(output+"/drawings/generated_mol_%d.png"%(index))
+
+    if index is None:
+        name = output+"/drawings/live_generation.png"
+        
+    else:
+        name = output+"/drawings/generated_mol_%d.png"%(index)
+
+    img.save(name)
 
     if text is not None:
-        image = Image.open(output+"/drawings/generated_mol_%d.png"%(index))
+        image = Image.open(name)
         font = ImageFont.load_default()
         image_editable = ImageDraw.Draw(image)
         image_editable.text((image.size[0] - 65,15), text, color, font=font)
-        image.save(output+"/drawings/generated_mol_%d.png"%(index))
+        image.save(name)
         
-    if embed:
+    if embed and index is not None:
         Chem.SanitizeMol(mol)
         idc = EmbedMolecule(mol, 1000)
         if idc != -1:

@@ -5,7 +5,6 @@ from .utils import round_mol, draw_mol
 from types import SimpleNamespace
 import yaml
 import torch
-from torch_geometric import datasets
 import matplotlib
 import matplotlib.pyplot as plt
 import os
@@ -46,7 +45,6 @@ def init_test_params(config, output, device):
         initialize(None, tmpconfig, output, j, device=device)
     
 
-
 def test_params(target_property, model, config, output, device, *params):
 
     print("PARAMS:", params, flush=True)
@@ -74,7 +72,7 @@ def test_params(target_property, model, config, output, device, *params):
         
         fea_h, adj_vec, n_iter_final = invert(target_property, model, fea_h, adj_vec, tmpconfig, output)
         
-        atom_fea_ext, adj, _, _, _ = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)
+        atom_fea_ext, adj = weights_to_model_inputs(fea_h, adj_vec, tmpconfig)
         
         features, adj_round = round_mol(atom_fea_ext, adj, tmpconfig.n_onehot)
         
@@ -188,19 +186,8 @@ def generate(target_property, n, output, config=None):
     os.makedirs(output, exist_ok=True)
     os.makedirs(output + "/drawings", exist_ok=True)
     os.makedirs(output + "/xyzs", exist_ok=True)
-    
-    def keep_in(data):
-        return len(data.x) <= config.property_model_training.max_size
-
-    if not config.property_model_training.use_pretrained:
-        qm9 = datasets.QM9(output + "/dataset", pre_filter=keep_in)
-    else:
-        if config.inverter.start_from in ["random", "saved"]:
-            qm9 = None
-        else:
-            qm9 = datasets.QM9(output + "/dataset", pre_filter=keep_in)
             
-    model = train(qm9, config.property_model_training, output)
+    model = train(config.property_model_training, output)
     
     print("Starting molecule generation loop", flush=True)
 
@@ -231,17 +218,17 @@ def generate(target_property, n, output, config=None):
         print("------------------------------------")
         print("Molecule %d:"%i)
         
-        fea_h, adj_vec = initialize(qm9, config.inverter, output, j, device=device)
+        fea_h, adj_vec = initialize(config.inverter, output, j, device=device)
         
-        init_atom_fea_ext, init_adj, constraints, integer_fea, integer_adj = weights_to_model_inputs(fea_h, adj_vec, config.inverter)    
-        print("Model estimate for starting point:", model(init_atom_fea_ext, init_adj), constraints, integer_fea, integer_adj)
+        init_atom_fea_ext, init_adj = weights_to_model_inputs(fea_h, adj_vec, config.inverter)    
+        print("Model estimate for starting point:", model(init_atom_fea_ext, init_adj))
 
         print("Generating molecule with requested property...")
         fea_h, adj_vec, n_iter_final = invert(target_property, model, fea_h, adj_vec, config.inverter, output)
         
         # Printing the result ---------------------------------------------------------------------------
         
-        atom_fea_ext, adj, _, _, _ = weights_to_model_inputs(fea_h, adj_vec, config.inverter)
+        atom_fea_ext, adj = weights_to_model_inputs(fea_h, adj_vec, config.inverter)
 
         features, adj_round = round_mol(atom_fea_ext, adj, config.inverter.n_onehot)
 
@@ -271,10 +258,13 @@ def generate(target_property, n, output, config=None):
 
         val = model(atom_fea_ext_r, adj_r)
         print("Final property value after rounding:", val)
+
+        if abs(val - target_property) > config.inverter.stop_loss:
+            print("Target not actually reached!")
+            continue
+        
         print("Final property value after rounding (adj_r):", model(atom_fea_ext, adj_r))
         print("Final property value after rounding (fea_r):", model(atom_fea_ext_r, adj))
-
-        features, adj_round, smiles = draw_mol(atom_fea_ext, adj, config.inverter.n_onehot, output, index=i, embed=True, text="%f"%(val), color=(0,255,0))
         
         print("ROUNDING DIFF")
         print("FEA")
@@ -283,6 +273,8 @@ def generate(target_property, n, output, config=None):
         print(torch.max(abs(adj - adj_r)))
         # print(abs(atom_fea_ext - atom_fea_ext_r))
         # print(abs(adj - adj_r))
+
+        features, adj_round, smiles = draw_mol(atom_fea_ext, adj, config.inverter.n_onehot, output, index=i, embed=True, text="%f"%(val), color=(0,255,0))
         
         # print("STARTING ATOM FEA")
         # print(init_atom_fea_ext)
@@ -313,6 +305,9 @@ def generate(target_property, n, output, config=None):
         print("Number of components (molecules) in generated graph:", n_comp)
         print("Generated Molecule SMILES:")
         print(smiles)
+
+        print("N atoms of each type:")
+        print(torch.sum(features,dim=0))
         
         # Print value to file
         print(i, n_comp, smiles, float(val),file=f)

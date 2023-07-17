@@ -1,5 +1,5 @@
 from .utils import draw_mol, round_mol, MolFromGraph
-from .train import prepare_data
+from .train import prepare_data, prepare_data_from_features
 
 import torch
 from torch import optim, nn
@@ -24,13 +24,8 @@ def start_from(data, config):
     tidx = torch.tril_indices(row=N, col=N, offset=-1)
     
     # Get to correct shape
-    atom_fea = torch.zeros(N, config.n_onehot+1, device=device)
-    atom_fea[:data.x.shape[0],:config.n_onehot] = 1*data.x[:,:config.n_onehot]
-    atom_fea[data.x.shape[0]:, config.n_onehot] = 1
-    
-    atom_fea = atom_fea.unsqueeze(0)
-    
-    #N = atom_fea.shape[1]
+    atom_fea = torch.zeros(N, device=device)
+    atom_fea[:data.x.shape[0]][data.x[:,config.n_onehot] == 1] = 1
     
     adj = torch.zeros(N, N, device=device)
     for n,(i,j) in enumerate(data.edge_index.T):
@@ -50,7 +45,7 @@ def smooth_round(x, method="step"):
     elif method=="step":
         return torch.round(x) + 0.1*(x - torch.round(x))
 
-def max_round(x):
+def smooth_max(x):
 
     idx = torch.argmax(x[0,:,:], dim=1)
     
@@ -61,48 +56,39 @@ def max_round(x):
     return n_x
 
     # return x
-
+    
+    
+def smooth_onehot(x, p):
+    return torch.exp(-(x - p)**2/0.5)*((x < 4) if p==4 else 1) + (1*(x >= 4) if p==4 else 0)
+    # return torch.cos(torch.pi/2*(x-p))**2*((x >= p-1) & (x < p+1))*(x < 4) + (1*(x >= 4) if p==4 else 0)
+    
 def weights_to_model_inputs(fea_h, adj_vec, config):
-
+    
     device = adj_vec.device
     
-    N = fea_h.shape[1]
+    N = len(fea_h)
     
     tidx = torch.tril_indices(row=N, col=N, offset=-1)
-
-    atom_fea = fea_h**2/torch.sum(fea_h**2,dim=2,keepdim=True).expand((1, fea_h.shape[1], fea_h.shape[2]))
-    
-    # atom_fea = soft(config.sig_strength*(fea_norm-0.5))
-    
-    mr_atom_fea = max_round(atom_fea)
-    
-    atom_fea_ext = torch.cat([mr_atom_fea, torch.matmul(mr_atom_fea[0,:,:config.n_onehot], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]], device = device))],dim=2)
     
     adj = torch.zeros((N,N), device=device)
     
     adj[tidx[0],tidx[1]] = adj_vec**2
     
     adj = adj + adj.transpose(0,1)
-
+    
     adj = smooth_round(adj, method=config.rounding)
     
-    r_features, r_adj = round_mol(atom_fea_ext, adj, config.n_onehot)
+    adj_sum = torch.sum(adj, dim=1).unsqueeze(1)
 
-    bonds_per_atom = torch.matmul(r_features[:,:config.n_onehot], torch.tensor([1.0,4.0,3.0,2.0,1.0], device = device))
-
-    constraints = torch.sum((torch.sum(adj, dim=1) - bonds_per_atom)**2)
+    isH = sig(config.sig_strength*(2*fea_h[:] - 1.0)).unsqueeze(1)
     
-    integer_fea = torch.sum((r_features - atom_fea_ext[0,:,:config.n_onehot+1])**2)
+    atom_fea_adj = torch.cat([smooth_onehot(adj_sum, 1.0)*isH, smooth_onehot(adj_sum, 4.0), smooth_onehot(adj_sum, 3.0), smooth_onehot(adj_sum, 2.0), smooth_onehot(adj_sum, 1.0)*(1-isH), smooth_onehot(adj_sum, 0.0)], dim=1)
 
-    integer_adj = torch.sum((r_adj - adj)**2)
-
-    # integer_fea = torch.sum(torch.sin(atom_fea_ext[0,:,:config.n_onehot+1]*torch.pi)**6)
-
-    # integer_adj = torch.sum(torch.sin(adj*torch.pi)**6)
-    
+    atom_fea_ext = torch.cat([atom_fea_adj.unsqueeze(0), torch.matmul(atom_fea_adj[:,:config.n_onehot], torch.tensor([[[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]]], device = device))],dim=2)
+        
     adj = adj.unsqueeze(0)
 
-    return atom_fea_ext, adj, constraints, r_features, r_adj
+    return atom_fea_ext, adj 
 
 def gauss(x, p):
     return torch.exp(-(x - p)**2/0.25)
@@ -126,7 +112,7 @@ def get_components(adj):
     return idx
 
 
-def initialize(qm9, config, output, i, device="cpu"):
+def initialize(config, output, i, device="cpu"):
 
     N = config.max_size
 
@@ -143,7 +129,7 @@ def initialize(qm9, config, output, i, device="cpu"):
         
         adj_vec = torch.randn((N*(N-1)//2), device=device)*config.bond_multiplier
         
-        fea_h = torch.randn((1, N, config.n_onehot+1), device=device)
+        fea_h = torch.randn(N, device=device)
 
         pickle.dump((adj_vec, fea_h), open(output + "/save_random/%d.pkl"%(i),"wb")) # Save the random full matrices 
         
@@ -151,9 +137,6 @@ def initialize(qm9, config, output, i, device="cpu"):
 
         adj_vec[(tidx[0] > max_N - 1) | (tidx[1] > max_N - 1)] = 0
         
-        fea_h[0,max_N:,:] = 0
-
-        fea_h[0,max_N:,config.n_onehot] = 1
         
     elif config.start_from == "saved":
         adj_vec, fea_h = pickle.load(open(output + "/save_random/%d.pkl"%(i),"rb"))
@@ -162,14 +145,26 @@ def initialize(qm9, config, output, i, device="cpu"):
 
         adj_vec[(tidx[0] > max_N - 1) | (tidx[1] > max_N - 1)] = 0
         
-        fea_h[0,max_N:,:] = 0
-
-        fea_h[0,max_N:,config.n_onehot] = 1
         
     else:
+
+        from torch_geometric.datasets import QM9
+
+        def keep_in(data):
+            return len(data.x) <= config.max_size
+        
+        qm9 = QM9(output + "/dataset", pre_filter=keep_in)
+
         qmid = int(config.start_from)
+        
         fea_h, adj_vec = start_from(qm9[qmid].to(device), config)
-    
+
+        # nudge
+
+        N = config.max_size
+        
+        adj_vec = adj_vec + torch.randn((N*(N-1)//2), device=device)*config.adj_eps
+        
         init_features, init_adj = prepare_data(qm9[qmid].to(device), config.max_size, config.n_onehot)
     
         mol = MolFromGraph(init_features[0,:,:config.n_onehot],init_adj.squeeze(), config.n_onehot)
@@ -194,7 +189,7 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
     for param in model.parameters():
         param.requires_grad = False
     
-    optimizer = optim.Adam([adj_vec, fea_h], lr=config.inv_r)
+    optimizer = optim.Adam([{"params":adj_vec, "lr": config.inv_r}, {"params":fea_h, "lr": config.inv_r}])
     # optimizer = optim.SGD([adj_vec, fea_h], lr=config.inv_r)
 
     if config.show_losses:
@@ -222,31 +217,65 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
         loop = range(config.n_iter)
     else:
         loop = tqdm(range(config.n_iter))
-    
+
+    #init = True
     for e in loop:
         
-        atom_fea_ext, adj, constraints, r_features, r_adj = weights_to_model_inputs(fea_h, adj_vec, config)
+        atom_fea_ext, adj = weights_to_model_inputs(fea_h, adj_vec, config)
         
         score = model(atom_fea_ext, adj)
         
         loss = abs(score - torch.tensor([[target_value]], device=score.device))
+
+        proportions = (torch.sum(atom_fea_ext[0,:,:config.n_onehot], dim=0)/config.max_size - torch.tensor([0.4110, 0.3026, 0.0602, 0.0735, 0.0015]))**2
+
+        #proportions = proportions if proportions > 5 else 0
+
+        #proportions = torch.sum(proportions[proportions > 0.04])
+
+        proportions = torch.sum(proportions)
+
+        #proportions = config.max_size - torch.sum(atom_fea_ext[0,:,0], dim=0)
+        
+        # if init:
+        #     crit = 0.02
+        #     loss = proportions
+        
+        constraints = torch.sum(torch.sum(adj, dim=1)[torch.sum(adj, dim=1) > 4.3])
+
+        r_features, r_adj = round_mol(atom_fea_ext, adj, config.n_onehot)
         
         integer_fea = torch.sum((r_features - atom_fea_ext[0,:,:config.n_onehot+1])**2)
-
+        
         integer_adj = torch.sum((r_adj - adj.squeeze())**2)
         
-        r_bonds_per_atom = torch.matmul(r_features, torch.tensor([1.0,4.0,3.0,2.0,1.0,0.0], device=score.device))
+        r_bonds_per_atom = torch.matmul(r_features, torch.tensor([1.0,4.0,3.0,2.0,1.0,0.0], device=score.device))            
+
+        true_score = float(model(*prepare_data_from_features(r_features, r_adj, config.n_onehot)))
+
+        true_loss = abs(true_score - target_value)
         
-        if torch.sum(abs(r_bonds_per_atom - torch.sum(r_adj, dim=1))) < 1e-12 and loss < config.stop_loss:
+        if torch.sum(abs(r_bonds_per_atom - torch.sum(r_adj, dim=1))) < 1e-12 and (true_loss < config.stop_loss or loss < 1e-6) and proportions < config.stop_prop: #crit:
 
             # Number of components in graph
             L = torch.diag(torch.sum((r_adj != 0),axis=0)) - (r_adj != 0)*1
-            n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - int(torch.sum(r_features[:,config.n_onehot]))
+            n_blank = int(torch.sum(r_features[:,config.n_onehot]))
+            n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - n_blank
 
-            if n_comp == 1:
+            if n_comp == 1 and config.max_size - n_blank >= config.min_size:
+                # if init:
+                #     init = False
+                #     crit = config.stop_loss
+                #     draw_mol(atom_fea_ext, adj, config.n_onehot, output, text="%f"%(score), color=(int(255*(float(loss/score))),int(255*(1-float(loss/score))),0))
+                #     print((torch.sum(atom_fea_ext[0,:,:config.n_onehot], dim=0)/config.max_size - torch.tensor([0.4110, 0.3026, 0.0602, 0.0735, 0.0015]))**2)
+                #     input()
+                #     optimizer = optim.Adam([adj_vec, fea_h], lr=config.inv_r)
+                #     continue
                 break
             else:
 
+                print("TOO MANY COMPS!")
+                
                 #draw_mol(atom_fea_ext, adj, config.n_onehot, output)
                 
                 comps = get_components(r_adj)
@@ -260,17 +289,6 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
                         
                         adj_vec[torch.all(tidx[0].unsqueeze(1).expand(-1,len(idx)) != torch.tensor([idx]).expand(len(tidx[0]),-1), dim=1) & torch.any(tidx[1].unsqueeze(1).expand(-1,len(idx)) != torch.tensor([idx]).expand(len(tidx[1]),-1), dim=1)] = 0
                         
-                        new_fea_h = 0*fea_h
-                        
-                        new_fea_h[0,:,config.n_onehot] = 1
-                    
-                        new_fea_h[0,idx,:] = fea_h[0,idx,:]
-                    
-                        fea_h = new_fea_h
-                        
-                    # atom_fea_ext, adj, constraints, r_features, r_adj = weights_to_model_inputs(fea_h, adj_vec, config)
-                    
-                    # draw_mol(atom_fea_ext, adj, config.n_onehot, output)
                                         
                     adj_vec, fea_h = adj_vec.detach(), fea_h.detach()
                     
@@ -281,13 +299,35 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
                     
                     continue
 
-        total_loss = (config.l_loss*loss**2 + config.l_const*constraints**2)/(config.l_loss*loss + config.l_const*constraints)
+                else:
+
+                    print("SMALL COMP!")
+
+                    with torch.no_grad():
+
+                        N = config.max_size
+
+                        adj_vec = adj_vec + torch.randn((N*(N-1)//2), device=score.device)*config.adj_eps
+                        
+                    adj_vec, fea_h = adj_vec.detach(), fea_h.detach()
+                    
+                    adj_vec.requires_grad = True
+                    fea_h.requires_grad = True
+                    
+                    optimizer = optim.Adam([adj_vec, fea_h], lr=config.inv_r)
+                    
+                    continue
+        
+        total_loss = (config.l_loss*loss**2 + config.l_const*constraints**2 + config.l_prop*proportions**2)/(config.l_loss*loss + config.l_const*constraints + config.l_prop*proportions)
+
+        #total_loss = (config.l_loss*loss.detach()*loss + config.l_const*constraints.detach()*constraints + config.l_prop*proportions.detach()*proportions)/(config.l_loss*loss.detach() + config.l_const*constraints.detach() + config.l_prop*proportions.detach())
 
         total_losses.append(float(total_loss))
         losses.append(float(loss))
         constraint_losses.append(float(constraints))
         integer_fea_losses.append(float(integer_fea))
-        integer_adj_losses.append(float(integer_adj))
+        #integer_adj_losses.append(float(integer_adj))
+        integer_adj_losses.append(float(proportions))
         
         # backward
         optimizer.zero_grad()
@@ -298,7 +338,7 @@ def invert(target_value, model, fea_h, adj_vec, config, output):
         
         if e%10 == 0 and config.show_losses:
             #print(c[0], c[1], n_dip, float(loss), torch.max(abs(fea_h)), torch.max(abs(adj_vec)))
-            print(float(total_loss), float(loss), float(constraints), float(integer_fea), float(integer_adj), float(score))
+            print(float(total_loss), float(loss), float(constraints), float(proportions), float(score))
             
         if e%1000 == 0 and config.show_losses:
             plt.plot(total_losses,'k')
