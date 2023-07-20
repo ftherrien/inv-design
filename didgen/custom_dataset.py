@@ -132,16 +132,21 @@ class QM9like(InMemoryDataset):
     raw_url2 = ""
     processed_url = ""
 
-    default_type_list = types = ['H', 'C', 'N', 'O', 'F']
+    default_type_list = ['H', 'C', 'N', 'O', 'F']
     
     def __init__(self, root: str, transform: Optional[Callable] = None,
                  pre_transform: Optional[Callable] = None,
-                 pre_filter: Optional[Callable] = None, raw_name="generated_dataset", type_list = default_type_list):
+                 pre_filter: Optional[Callable] = None, raw_name="generated_dataset", type_list = default_type_list, return_type_list=False):
         print(root, transform, pre_transform, pre_filter)
         self.raw_name = raw_name
+        self.return_type_list = return_type_list
+        if self.return_type_list:
+            self.types = dict()
+        else:
+            self.types = type_list
         super().__init__(root, transform, pre_transform, pre_filter)
+        self.types = torch.load("/".join(self.processed_paths[0].split("/")[:-1]) + "/onehot.pt")
         self.data, self.slices = torch.load(self.processed_paths[0])
-        self.types = {n: i for i,n in enumerate(type_list)}
 
     def mean(self, target: int) -> float:
         y = torch.cat([self.get(i).y for i in range(len(self))], dim=0)
@@ -219,6 +224,16 @@ class QM9like(InMemoryDataset):
         suppl = Chem.SDMolSupplier(self.raw_paths[0], removeHs=False,
                                    sanitize=False)
 
+        for mol in tqdm(suppl):
+            for atom in mol.GetAtoms():
+                symb = atom.GetSymbol()
+                nb = sum([b.GetBondTypeAsDouble() for b in atom.GetBonds()])
+                if symb in self.types:
+                    if nb not in self.types[symb][1]:
+                        self.types[symb][1].append(nb)
+                else:
+                    self.types[symb] = [len(self.types), [nb]]
+        
         data_list = []
         for i, mol in enumerate(tqdm(suppl)):
 
@@ -236,7 +251,11 @@ class QM9like(InMemoryDataset):
             sp3 = []
             num_hs = []
             for atom in mol.GetAtoms():
-                type_idx.append(self.types[atom.GetSymbol()])
+                if self.return_type_list:
+                    type_idx.append(self.types[atom.GetSymbol()][0])
+                else:   
+                    type_idx.append(self.types.index(atom.GetSymbol()))
+                    
                 atomic_number.append(atom.GetAtomicNum())
                 aromatic.append(1 if atom.GetIsAromatic() else 0)
                 hybridization = atom.GetHybridization()
@@ -265,7 +284,7 @@ class QM9like(InMemoryDataset):
             row, col = edge_index
             hs = (z == 1).to(torch.float)
             num_hs = scatter(hs[row], col, dim_size=N, reduce='sum').tolist()
-
+            
             x1 = one_hot(torch.tensor(type_idx), num_classes=len(self.types))
             x2 = torch.tensor([atomic_number, aromatic, sp, sp2, sp3, num_hs],
                               dtype=torch.float).t().contiguous()
@@ -284,4 +303,5 @@ class QM9like(InMemoryDataset):
 
             data_list.append(data)
 
+        torch.save(self.types, "/".join(self.processed_paths[0].split("/")[:-1]) + "/onehot.pt")
         torch.save(self.collate(data_list), self.processed_paths[0])

@@ -18,15 +18,17 @@ import pickle
 def gauss(x, a, x0, sigma):
     return a*np.exp(-(x-x0)**2/(2*sigma**2))
 
-def prepare_data(data, N, n_onehot):
+def prepare_data(data, N, extra_fea_matrix):
     """Create explicit adjacency matrix and feature matrix from single data point"""
 
     device = data.x.device
+
+    n_onehot = len(extra_fea_matrix)
     
     atom_fea = torch.zeros(N, n_onehot+1, device=device)
     atom_fea[:data.x.shape[0],:n_onehot] = 1*data.x[:,:n_onehot]
     atom_fea[data.x.shape[0]:, n_onehot] = 1
-    atom_fea = torch.cat([atom_fea, torch.matmul(atom_fea[:,:n_onehot], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]], device=device))],dim=1)
+    atom_fea = add_extra_features(atom_fea, extra_fea_matrix)
     atom_fea = atom_fea.unsqueeze(0)
     
     #N = data.x.shape[0]
@@ -37,14 +39,14 @@ def prepare_data(data, N, n_onehot):
     
     return atom_fea, adj
 
-def prepare_data_vector(data, N, n_onehot, shuffle=False):
+def prepare_data_vector(data, N, extra_fea_matrix, shuffle=False):
     """Create explicit adjacency matrix and feature matrix vector from mini-batch"""
 
     t = time.time()
         
-    atom_fea = 1*data.x[:,:n_onehot]
-
-    atom_fea = torch.cat([atom_fea, torch.zeros(atom_fea.shape[0],1, device=atom_fea.device), torch.matmul(atom_fea[:,:n_onehot], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]], device=atom_fea.device))],dim=1)
+    atom_fea = 1*data.x[:,:len(extra_fea_matrix)]
+    
+    atom_fea = add_extra_features(torch.cat([atom_fea, torch.zeros(atom_fea.shape[0],1, device=atom_fea.device)], dim=1), extra_fea_matrix)
     
     #N = torch.max(torch.tensor([torch.sum(data.batch==i) for i in range(data.num_graphs)]))
     
@@ -62,7 +64,7 @@ def prepare_data_vector(data, N, n_onehot, shuffle=False):
     # This can be vectorized: https://stackoverflow.com/questions/43146266/convert-list-of-lists-with-different-lengths-to-a-numpy-array
     for i, ten in enumerate(new_atom_fea_pieces):
         new_atom_fea[i,p[:ten.shape[0]],:] = ten
-        new_atom_fea[i,p[ten.shape[0]:],n_onehot] = 1
+        new_atom_fea[i,p[ten.shape[0]:],len(extra_fea_matrix)] = 1
         
     adj = torch.zeros(data.num_graphs, N,N, device=atom_fea.device)
     bond_type = torch.tensor([1,2,3,1.5], device=atom_fea.device)
@@ -74,16 +76,8 @@ def prepare_data_vector(data, N, n_onehot, shuffle=False):
     
     return new_atom_fea, adj
 
-def prepare_data_from_features(features, adj, n_onehot):
-    """From simple adj and feature matrix add atoms info and adjust dimensions from model input"""
-
-    N = features.shape[0]
- 
-    new_atom_fea = torch.cat([features, torch.matmul(features[:,:n_onehot], torch.tensor([[1.0/8],[4.0/8],[5.0/8],[6.0/8],[7.0/8]], device=features.device))],dim=1).unsqueeze(0)
-
-    adj = adj.unsqueeze(0)
-    
-    return new_atom_fea, adj
+def add_extra_features(features, extra_fea_matrix):
+    return torch.cat([features, torch.matmul(features[:,:len(extra_fea_matrix)], extra_fea_matrix)],dim=1)
                 
 def nudge(atom_fea, adj, noise_factor):
     atom_fea = atom_fea + torch.randn(*atom_fea.shape, device=atom_fea.device)*noise_factor
@@ -95,56 +89,6 @@ def shuffle(t):
     t = t.view(-1)[idx].view(t.size())
     return t
 
-def get_samplers(dataset, config):
-
-    if config.n_data > len(dataset):
-        config.n_data = len(dataset)
-        print("Warning: requested amount of data is larger than database. Setting n_data to %d"%(len(dataset)))
-
-    if config.n_data//1000 > 2:
-        
-        y, bins = torch.histogram(dataset.data.y[:,4], config.n_data//1000)
-
-        bins[0] -= 1e-12
-        bins[-1] += 1e-12
-
-        bin_idx = torch.bucketize(dataset.data.y[:,4], bins) - 1
-
-        x = (bins[1:] + bins[:-1])/2
-
-        p, pcov = curve_fit(gauss, x.detach().numpy(), y.detach().numpy())
-
-        normal_y = gauss(x,*p)
-
-        print("Closest gaussian distribution: A: %f, mu: %f, sigma:%f"%tuple(p))
-    
-        threshold = 100
-    
-        bin_weights = torch.ones(len(y))
-        bin_weights[normal_y > threshold] = gauss(x[normal_y > threshold],*p)/y[normal_y > threshold]
-
-        pickle.dump(bin_weights, open("weights.pkl", "wb"))
-    
-        weights = bin_weights[bin_idx]
-
-    else:
-
-        print("Warning: No class balancing")
-        
-        weights = torch.ones(len(dataset))
-    
-    
-    valid_size = config.n_data//10
-    train_size = config.n_data - valid_size
-    
-    # This will determine the valid-train split
-    if config.random_split:
-        idx = torch.randperm(len(dataset))[:train_size + valid_size]
-    else:
-        idx = torch.tensor(list(range(train_size + valid_size)))
-    
-    return SubsetWeightedRandomSampler(weights, idx[:train_size]), SubsetWeightedRandomSampler(weights, idx[train_size:train_size+valid_size])
-
 def train(config, output):
 
     # Set device cuda for GPU if it's available otherwise run on the CPU
@@ -153,13 +97,12 @@ def train(config, output):
     # Initialize network
 
     if config.model == "SimpleNet":
-        model = SimpleNet(config.n_onehot+2, 
-                          atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, layer_list=config.layer_list, n_h=1,
-                          classification=False, pooling=config.pooling, dropout = config.dropout).to(device)
+        model = SimpleNet(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1, 
+                          atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, layer_list=config.layer_list, n_out=len(config.property),
+                          pooling=config.pooling, dropout = config.dropout).to(device)
     else:
-        model = CGCNN(config.n_onehot+2,
-                      atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, h_fea_len=128, n_h=1,
-                      classification=False).to(device)
+        model = CGCNN(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1,
+                      atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, h_fea_len=128, n_out=len(config.property)).to(device)
 
     if config.use_pretrained or config.transfer_learn:
         if os.path.isfile(output+'/model_weights.pth'):
@@ -172,8 +115,8 @@ def train(config, output):
         def keep_in(data):
             return len(data.x) <= config.max_size
 
-        gen = QM9like(output+"/gen_dataset", raw_name="generated_dataset", pre_filter=keep_in)
-        gen = gen[torch.randperm(len(gen))]
+        #gen = QM9like(output+"/gen_dataset", raw_name="generated_dataset", pre_filter=keep_in)
+        #gen = gen[torch.randperm(len(gen))]
         
         dataset_dict = dict()
         
@@ -182,20 +125,33 @@ def train(config, output):
             dataset_dict["qm9"] = QM9(output + "/dataset", pre_filter=keep_in)
             dataset_dict["qm9"] = dataset_dict["qm9"][torch.randperm(len(dataset_dict["qm9"]))]
 
+            if ["H", "C", "N", "O", "F"] != config.type_list:
+                raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types)) 
+            
         if "gen" in config.datasets:
 
-            dataset_dict["gen"] = gen
+            dataset_dict["gen"] = QM9like(output+"/gen_dataset", raw_name="generated_dataset", pre_filter=keep_in)
+            dataset_dict["gen"] = gen[torch.randperm(len(gen))]
 
+            if list(dataset_dict["gen"].types) != config.type_list:
+                raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types))
+            
         if "ogb" in config.datasets:
             
             dataset_dict["ogb"] = QM9like(output+"/ogb_dataset", raw_name="ogb", pre_filter=keep_in)
             dataset_dict["ogb"] = dataset_dict["ogb"][torch.randperm(len(dataset_dict["ogb"]))]
 
+            if list(dataset_dict["ogb"].types) != config.type_list:
+                raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types))
+            
         if "cep" in config.datasets:
             
             dataset_dict["cep"] = QM9like(output+"/cep_dataset", raw_name="cep", pre_filter=keep_in)
             dataset_dict["cep"] = dataset_dict["cep"][torch.randperm(len(dataset_dict["cep"]))]
 
+            if list(dataset_dict["cep"].types) != config.type_list:
+                raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types))
+            
         all_train = torch.utils.data.ConcatDataset([data[:len(data)-len(data)//10] for data in dataset_dict.values()])
         all_valid = torch.utils.data.ConcatDataset([data[len(data)-len(data)//10:] for data in dataset_dict.values()])
 
@@ -209,7 +165,7 @@ def train(config, output):
         loader_train = DataLoader(all_train, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
         loader_valid = DataLoader(all_valid, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
 
-        loader_gen = DataLoader(gen, batch_size = len(gen), shuffle=True) #sampler=valid_sampler)
+        #loader_gen = DataLoader(gen, batch_size = len(gen), shuffle=True) #sampler=valid_sampler)
         
         # Loss and optimizer
         criterion = nn.L1Loss()
@@ -223,7 +179,7 @@ def train(config, output):
         ax2 = fig.add_subplot(1,2,2)
         ax1.plot([],'b',label = 'Train')
         ax1.plot([],'r',label = 'Validation')
-        ax1.plot([],'orange',label = 'Generated')
+        #ax1.plot([],'orange',label = 'Generated')
         ax1.set_yscale("log")
         ax1.set_xlabel('Epoch')
         ax1.set_ylabel('MAE (eV)')
@@ -232,7 +188,7 @@ def train(config, output):
         # Train Network
         epoch_loss_train = []
         epoch_loss_valid = []
-        epoch_loss_gen = []
+        # epoch_loss_gen = []
         training_time = time.time()
         for epoch in range(config.num_epochs):
     
@@ -245,22 +201,20 @@ def train(config, output):
                 # Get data to cuda if possible
                 data = data.to(device=device)
                 
-                inputs = prepare_data_vector(data, config.max_size, config.n_onehot, shuffle=config.shuffle)
-    
+                inputs = prepare_data_vector(data, config.max_size, config._extra_fea_matrix, shuffle=config.shuffle)
+                
                 inputs = nudge(*inputs, config.noise_factor) # Make the model more tolerent of non integers
                 
                 # forward
-                scores = model(*inputs).squeeze()
+                scores = model(*inputs)
                 
-                target = data.y[:,4]
+                target = data.y[:,config.property]
     
                 epoch_scores.append(scores.detach())
                 epoch_targets.append(target)
-
                 
-                
-                #loss = criterion(scores, target)
-                loss = torch.mean(abs(scores - target)*(0.1 + (target - torch.mean(target,dim=0))**2))
+                loss = criterion(scores, target)
+                # loss = torch.mean(abs(scores - target)*(0.1 + (target - torch.mean(target,dim=0))**2))
                 epoch_loss_train[-1] += float(loss)
                 
                 # backward
@@ -280,8 +234,8 @@ def train(config, output):
                     data = data.to(device=device)
                     
                     # forward
-                    scores_valid = model(*prepare_data_vector(data, config.max_size, config.n_onehot)).squeeze()
-                    target_valid = data.y[:,4]
+                    scores_valid = model(*prepare_data_vector(data, config.max_size, config._extra_fea_matrix))
+                    target_valid = data.y[:,config.property]
                 
                     epoch_scores_valid.append(scores_valid)
                     epoch_targets_valid.append(target_valid)
@@ -289,38 +243,39 @@ def train(config, output):
                     loss = criterion(scores_valid, target_valid)
                     epoch_loss_valid[-1] += float(loss)
 
-                epoch_loss_gen.append(0)
-                epoch_scores_gen = []
-                epoch_targets_gen = []
-                for batch_idx, data in enumerate(loader_gen):
-                    # Get data to cuda if possible
-                    data = data.to(device=device)
+                # epoch_loss_gen.append(0)
+                # epoch_scores_gen = []
+                # epoch_targets_gen = []
+                # for batch_idx, data in enumerate(loader_gen):
+                #     # Get data to cuda if possible
+                #     data = data.to(device=device)
                     
-                    # forward
-                    scores_gen = model(*prepare_data_vector(data, config.max_size, config.n_onehot)).squeeze()
-                    target_gen = data.y[:,4]
+                #     # forward
+                #     scores_gen = model(*prepare_data_vector(data, config.max_size, config._extra_fea_matrix))
+                #     target_gen = data.y[:,config.property]
                 
-                    epoch_scores_gen.append(scores_gen)
-                    epoch_targets_gen.append(target_gen)
+                #     epoch_scores_gen.append(scores_gen)
+                #     epoch_targets_gen.append(target_gen)
                     
-                    loss = criterion(scores_gen, target_gen)
-                    epoch_loss_gen[-1] += float(loss)
+                #     loss = criterion(scores_gen, target_gen)
+                #     epoch_loss_gen[-1] += float(loss)
                 
             epoch_loss_train[-1] = epoch_loss_train[-1]/len(loader_train)
             epoch_loss_valid[-1] = epoch_loss_valid[-1]/len(loader_valid)
-            epoch_loss_gen[-1] = epoch_loss_gen[-1]/len(loader_gen)
-            print(epoch, "AVG TRAIN MAE", float(epoch_loss_train[-1]), "AVG VALID MAE", float(epoch_loss_valid[-1]), "AVG GEN MAE", float(epoch_loss_gen[-1]), flush=True)
+            #epoch_loss_gen[-1] = epoch_loss_gen[-1]/len(loader_gen)
+            #print(epoch, "AVG TRAIN MAE", float(epoch_loss_train[-1]), "AVG VALID MAE", float(epoch_loss_valid[-1]), "AVG GEN MAE", float(epoch_loss_gen[-1]), flush=True)
+            print(epoch, "AVG TRAIN MAE", float(epoch_loss_train[-1]), "AVG VALID MAE", float(epoch_loss_valid[-1]), flush=True)
             #scheduler.step(epoch_loss_train[-1])
             
             if epoch%10 == 0:
                 ax2.clear()
                 ax1.plot(epoch_loss_valid[:-1],'r',label = 'Validation')
-                ax1.plot(epoch_loss_gen[:-1],'orange',label = 'Generated')
+                # ax1.plot(epoch_loss_gen[:-1],'orange',label = 'Generated')
                 ax1.plot(epoch_loss_train[1:],'b',label = 'Train')
                 # ax1.axhline(std, color = 'k', label = 'STD')
                 ax2.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".", alpha=0.1)
                 ax2.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(), ".", alpha=0.1)
-                ax2.plot(torch.cat(epoch_targets_gen).cpu(), torch.cat(epoch_scores_gen).cpu().detach().numpy(), ".", alpha=0.1)
+                # ax2.plot(torch.cat(epoch_targets_gen).cpu(), torch.cat(epoch_scores_gen).cpu().detach().numpy(), ".", alpha=0.1)
                 x = np.linspace(0,18,300)
                 ax2.fill_between(x, x+1, x-1, color="gray", alpha=0.1)
                 ax2.plot(x, x, color="k", alpha=0.5)
@@ -342,10 +297,10 @@ def train(config, output):
                 # Get data to cuda if possible
                 data = data.to(device=device)
                 
-                inputs = prepare_data_vector(data, config.max_size, config.n_onehot, shuffle=True)
+                inputs = prepare_data_vector(data, config.max_size, config._extra_fea_matrix, shuffle=True)
                             
-                scores = model(*inputs).squeeze()
-                target = data.y[:,4]
+                scores = model(*inputs)
+                target = data.y[:,config.property]
                 
                 epoch_scores.append(scores)
                 epoch_targets.append(target)
@@ -358,24 +313,24 @@ def train(config, output):
                     data = data.to(device=device)
                 
                     # forward
-                    scores_valid = model(*prepare_data_vector(data, config.max_size, config.n_onehot)).squeeze()
-                    target_valid = data.y[:,4]
+                    scores_valid = model(*prepare_data_vector(data, config.max_size, config._extra_fea_matrix))
+                    target_valid = data.y[:,config.property]
             
                     epoch_scores_valid.append(scores_valid)
                     epoch_targets_valid.append(target_valid)
 
-                epoch_scores_gen = []
-                epoch_targets_gen = []
-                for batch_idx, data in enumerate(loader_gen):
-                    # Get data to cuda if possible
-                    data = data.to(device=device)
+                # epoch_scores_gen = []
+                # epoch_targets_gen = []
+                # for batch_idx, data in enumerate(loader_gen):
+                #     # Get data to cuda if possible
+                #     data = data.to(device=device)
                 
-                    # forward
-                    scores_gen = model(*prepare_data_vector(data, config.max_size, config.n_onehot)).squeeze()
-                    target_gen = data.y[:,4]
+                #     # forward
+                #     scores_gen = model(*prepare_data_vector(data, config.max_size, config._extra_fea_matrix))
+                #     target_gen = data.y[:,config.property]
             
-                    epoch_scores_gen.append(scores_gen)
-                    epoch_targets_gen.append(target_gen)
+                #     epoch_scores_gen.append(scores_gen)
+                #     epoch_targets_gen.append(target_gen)
 
         plt.figure()
 
@@ -394,12 +349,12 @@ def train(config, output):
         
         print("FINAL VALID MAE", criterion(torch.cat(epoch_targets_valid), torch.cat(epoch_scores_valid)))
 
-        gen_targets = torch.cat(epoch_targets_gen).cpu()
-        gen_scores = torch.cat(epoch_scores_gen).cpu().detach().numpy()
+        #gen_targets = torch.cat(epoch_targets_gen).cpu()
+        #gen_scores = torch.cat(epoch_scores_gen).cpu().detach().numpy()
         
-        plt.plot(gen_targets, gen_scores,".", alpha=0.1)
+        #plt.plot(gen_targets, gen_scores,".", alpha=0.1)
         
-        print("FINAL GEN MAE", criterion(torch.cat(epoch_targets_gen), torch.cat(epoch_scores_gen)))
+        #print("FINAL GEN MAE", criterion(torch.cat(epoch_targets_gen), torch.cat(epoch_scores_gen)))
         
         pickle.dump((train_targets, train_scores, valid_targets, valid_scores), open(output+"/final_performance_data.pkl","wb"))
         

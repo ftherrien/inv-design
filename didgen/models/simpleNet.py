@@ -68,7 +68,7 @@ class SimpleNet(nn.Module):
     material properties.
     """
     def __init__(self, orig_atom_fea_len,
-                 atom_fea_len=64, n_conv=3, layer_list=[128], n_h=1,
+                 atom_fea_len=64, n_conv=3, layer_list=[128], n_out=1,
                  classification=False, pooling="sum", dropout=None):
         """
         Initialize CrystalGraphConvNet.
@@ -84,8 +84,8 @@ class SimpleNet(nn.Module):
           Number of convolutional layers
         h_fea_len: int
           Number of hidden features after pooling
-        n_h: int
-          Number of hidden layers after pooling
+        n_out: int
+          Number of output layers
         """
         super(SimpleNet, self).__init__()
     
@@ -109,7 +109,7 @@ class SimpleNet(nn.Module):
             seq = (nn.Dropout(dropout), nn.Linear(atom_fea_len, layer_list[0]), self.nonlinear)
             for i in range(len(layer_list)-1):
                 seq += (nn.Dropout(dropout), nn.Linear(layer_list[i], layer_list[i+1]), self.nonlinear)
-            seq += (nn.Dropout(dropout), nn.Linear(layer_list[-1], 1), self.nonlinear)
+            seq += (nn.Dropout(dropout), nn.Linear(layer_list[-1], n_out), self.nonlinear)
              
         self.deep = nn.Sequential(*seq)
         

@@ -31,11 +31,11 @@ def round_mol(atom_fea_ext, adj, n_onehot, smooth=False, half=False):
 
     return features, adj
 
-def draw_mol(atom_fea_ext, adj, n_onehot, output, index=None, embed=False, text=None, color=(255,0,0)):
+def draw_mol(atom_fea_ext, adj, type_list, output, index=None, embed=False, text=None, color=(255,0,0)):
 
-    features, adj = round_mol(atom_fea_ext, adj, n_onehot)
+    features, adj = round_mol(atom_fea_ext, adj, len(type_list))
     
-    mol = MolFromGraph(features, adj, n_onehot)
+    mol = MolFromGraph(features, adj, type_list)
 
     if index is not None:
         pickle.dump(mol,open(output+"/xyzs/generated_mol_%d.pickle"%(index),"wb"))
@@ -55,7 +55,7 @@ def draw_mol(atom_fea_ext, adj, n_onehot, output, index=None, embed=False, text=
         image = Image.open(name)
         font = ImageFont.load_default()
         image_editable = ImageDraw.Draw(image)
-        image_editable.text((image.size[0] - 65,15), text, color, font=font)
+        image_editable.text((15,15), text, color, font=font)
         image.save(name)
         
     if embed and index is not None:
@@ -74,9 +74,7 @@ def draw_mol(atom_fea_ext, adj, n_onehot, output, index=None, embed=False, text=
             
     return features, adj, smiles
 
-def MolFromGraph(features, adjacency_matrix, n_onehot):
-
-    atoms = np.array(["H","C","N","O","F"])
+def MolFromGraph(features, adjacency_matrix, type_list):
     
     # create empty editable mol object
     mol = Chem.RWMol()
@@ -84,7 +82,7 @@ def MolFromGraph(features, adjacency_matrix, n_onehot):
     # add atoms to mol and keep track of index
     node_to_idx = {}
     for i in range(len(features)):
-        atom_type = atoms[(features[i,:n_onehot]==1).cpu().numpy()]
+        atom_type = np.array(type_list)[(features[i,:len(type_list)]==1).cpu().numpy()]
         if len(atom_type) > 0:
             a = Chem.Atom(atom_type[0])
             molIdx = mol.AddAtom(a)

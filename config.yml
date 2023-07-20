@@ -1,36 +1,49 @@
-property_model_training:
-    n_data: 100000
-    num_epochs: 500
-    batch_size: 10000
-    n_onehot: 5
-    nbr_fea_len: 4
-    learning_rate: 0.01
-    max_size: 20
-    random_split: True
-    noise_factor: 0.2
-    transfer_learn: True
-    use_pretrained: True
-    model: "SimpleNet"
+property: [4]
+target: [6]
 
-inverter:
-    max_size: 20
-    min_size: 5
-    starting_size: 20
-    sig_strength: 1
-    start_from: "random"
-    n_iter: 15000
-    mini_hpo:
-        method: False
-        n_comb: 0
-        n_starts: 5
-        n_iter: 1000
-        stop_chem: 0.9
-        stop_loss: 1
-    inv_r: 0.1
-    n_onehot: 5
-    l_loss: 10
-    l_const: 1
+max_size: 20
+type_list: [H, C, N, O, F] #[C, S, Si, O, H, N, Se]
+bonding: [1, 4, 3, 2, 1]  #[4, 2,  4, 2, 1, 3, 2]
+extra_features: [n_valence] # atomic_weight, atomic_number, n_valence
+proportions: [0.4110, 0.3026, 0.0602, 0.0735, 0.0015] #[0.3, 0.01, 0.01, 0.05, 0.4, 0.05, 0.01]
+
+n_data: 100000
+datasets: [qm9]
+num_epochs: 2000
+batch_size: 10000
+learning_rate: 0.001
+noise_factor: 0.05
+transfer_learn: False
+use_pretrained: True
+model: "SimpleNet"
+pooling: smartest
+layer_list: [128]
+shuffle: False
+n_conv: 3
+atom_fea_len: 64
+dropout: 0
+weight_decay: 0
+
+min_size: 10
+starting_size: 20
+start_from: "random"
+n_iter: 6000
+mini_hpo:
+    method: False
+    n_comb: 30
+    n_starts: 10
+    n_iter: 5000
     stop_chem: 0.3
-    stop_loss: 0.9
-    show_losses: False
-    max_attempts: 1
+    stop_loss: 1
+inv_r: 0.01
+l_loss: 1
+l_const: 100
+l_prop: 100
+stop_loss: 0.1
+stop_prop: 0.1
+adj_eps: 0.1
+show_losses: False
+max_attempts: 1
+rounding: step
+bond_multiplier: 0.5
+
