@@ -208,7 +208,7 @@ def initialize(config, output, i, device="cpu"):
 
 def invert(model, fea_h, adj_vec, config, output):
     """ Backpropagates all the way to the input to produce a molecule with a specific property """
-
+    
     # Freezes the trained model
     for param in model.parameters():
         param.requires_grad = False
@@ -251,7 +251,7 @@ def invert(model, fea_h, adj_vec, config, output):
         
         loss = torch.sum(abs(score - torch.tensor([config.target], device=score.device)))
 
-        proportions = (torch.sum(atom_fea_ext[0,:,:len(config.type_list)], dim=0)/config.max_size - torch.tensor(config.proportions))**2
+        proportions = (torch.sum(atom_fea_ext[0,:,:len(config.type_list)], dim=0)/config.max_size - torch.tensor(config.proportions, device=score.device))**2
 
         #proportions = proportions if proportions > 5 else 0
 
@@ -273,11 +273,11 @@ def invert(model, fea_h, adj_vec, config, output):
         
         integer_adj = torch.sum((r_adj - adj.squeeze())**2)
         
-        r_bonds_per_atom = torch.matmul(r_features, torch.cat([config.bonding, torch.zeros(1)]))            
+        r_bonds_per_atom = torch.matmul(r_features, torch.cat([config.bonding, torch.zeros(1, device=r_features.device)]))            
 
         true_score = model(add_extra_features(r_features, config._extra_fea_matrix).unsqueeze(0), r_adj.unsqueeze(0)).detach()
 
-        true_loss = float(torch.sum(abs(true_score - torch.tensor([config.target]))))
+        true_loss = float(torch.sum(abs(true_score - torch.tensor([config.target], device=true_score.device))))
         
         if torch.sum(abs(r_bonds_per_atom - torch.sum(r_adj, dim=1))) < 1e-12 and (true_loss < config.stop_loss or loss < 1e-6) and proportions < config.stop_prop: #crit:
 

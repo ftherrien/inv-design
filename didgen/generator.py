@@ -201,9 +201,9 @@ def generate(n, output, config=None):
 
     config = to_SimpleNamespace(config)
 
-    config.bonding = torch.tensor(config.bonding)
+    config.bonding = torch.tensor(config.bonding, device=device)
 
-    config.bonding_mask = [(config.bonding == i) for i in set(config.bonding.tol) if sum(config.bonding == i) > 1] 
+    config.bonding_mask = [(config.bonding == i) for i in set(config.bonding.tolist()) if sum(config.bonding == i) > 1] 
     
     config._extra_fea_matrix = get_extra_features_matrix(config.type_list, config.extra_features, device)
 
@@ -242,7 +242,7 @@ def generate(n, output, config=None):
         
         fea_h, adj_vec = initialize(config, output, j, device=device)
 
-        init_atom_fea_ext, init_adj = weights_to_model_inputs(fea_h, adj_vec, config)    
+        init_atom_fea_ext, init_adj = weights_to_model_inputs(fea_h, adj_vec, config)
         
         print("Model estimate for starting point:", model(init_atom_fea_ext, init_adj))
 
@@ -255,7 +255,7 @@ def generate(n, output, config=None):
 
         features, adj_round = round_mol(atom_fea_ext, adj, len(config.type_list))
 
-        r_bonds_per_atom = torch.matmul(features, torch.cat([config.bonding, torch.zeros(1)]))
+        r_bonds_per_atom = torch.matmul(features, torch.cat([config.bonding, torch.zeros(1, device=features.device)]))
 
         # Number of components in graph
 
@@ -281,7 +281,7 @@ def generate(n, output, config=None):
         val = model(atom_fea_ext_r, adj_r)
         print("Final property value after rounding:", val)
 
-        if torch.sum(abs(val - torch.tensor([config.target]))) > config.stop_loss:
+        if torch.sum(abs(val - torch.tensor([config.target], device=val.device))) > config.stop_loss:
             print("Target not actually reached!")
             continue
         

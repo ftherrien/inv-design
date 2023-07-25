@@ -5,7 +5,7 @@ class ConvLayer(nn.Module):
     """
     Convolutional operation on graphs
     """
-    def __init__(self, atom_fea_len, dropout=None):
+    def __init__(self, atom_fea_len, dropout=None, batch_norm=False):
         """
         Initialize ConvLayer.
 
@@ -18,7 +18,9 @@ class ConvLayer(nn.Module):
         super(ConvLayer, self).__init__()
         self.atom_fea_len = atom_fea_len
         self.nonlinear = nn.Sigmoid()
-        self.bn = nn.BatchNorm1d(self.atom_fea_len)
+        self.batch_norm = batch_norm
+        if batch_norm:
+            self.bn = nn.BatchNorm1d(self.atom_fea_len)
         self.linear = nn.Linear(self.atom_fea_len, self.atom_fea_len)
 
         if dropout is not None:
@@ -53,7 +55,10 @@ class ConvLayer(nn.Module):
         N = atom_in_fea.shape[1]
         
         bonded_fea = adj.matmul(atom_in_fea) # (N0, N, atom_fea_len)
-        normal_bonded_fea = self.bn(bonded_fea.permute((1,2,0))).permute(2,0,1)
+        if self.batch_norm:
+            normal_bonded_fea = self.bn(bonded_fea.permute((1,2,0))).permute(2,0,1)
+        else:
+            normal_bonded_fea = bonded_fea #self.bn(bonded_fea.permute((1,2,0))).permute(2,0,1)
         if self.dropout:
             normal_bonded_fea = self.dplayer(normal_bonded_fea)
         embed_normal_bond_fea = self.linear(normal_bonded_fea)
@@ -69,7 +74,7 @@ class SimpleNet(nn.Module):
     """
     def __init__(self, orig_atom_fea_len,
                  atom_fea_len=64, n_conv=3, layer_list=[128], n_out=1,
-                 classification=False, pooling="sum", dropout=None):
+                 classification=False, pooling="sum", dropout=None, batch_norm=False):
         """
         Initialize CrystalGraphConvNet.
 
@@ -93,7 +98,7 @@ class SimpleNet(nn.Module):
 
         self.pooling_weights = nn.Linear(atom_fea_len, 1)
         
-        self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len, dropout=dropout)
+        self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len, dropout=dropout, batch_norm=batch_norm)
                                     for _ in range(n_conv)])
 
         self.nonlinear = nn.Softplus()
@@ -109,7 +114,7 @@ class SimpleNet(nn.Module):
             seq = (nn.Dropout(dropout), nn.Linear(atom_fea_len, layer_list[0]), self.nonlinear)
             for i in range(len(layer_list)-1):
                 seq += (nn.Dropout(dropout), nn.Linear(layer_list[i], layer_list[i+1]), self.nonlinear)
-            seq += (nn.Dropout(dropout), nn.Linear(layer_list[-1], n_out), self.nonlinear)
+            seq += (nn.Dropout(dropout), nn.Linear(layer_list[-1], n_out))
              
         self.deep = nn.Sequential(*seq)
         

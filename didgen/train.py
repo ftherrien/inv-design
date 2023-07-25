@@ -22,7 +22,7 @@ def prepare_data(data, N, extra_fea_matrix):
     """Create explicit adjacency matrix and feature matrix from single data point"""
 
     device = data.x.device
-
+    
     n_onehot = len(extra_fea_matrix)
     
     atom_fea = torch.zeros(N, n_onehot+1, device=device)
@@ -99,7 +99,7 @@ def train(config, output):
     if config.model == "SimpleNet":
         model = SimpleNet(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1, 
                           atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, layer_list=config.layer_list, n_out=len(config.property),
-                          pooling=config.pooling, dropout = config.dropout).to(device)
+                          pooling=config.pooling, dropout = config.dropout, batch_norm=config.batch_norm).to(device)
     else:
         model = CGCNN(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1,
                       atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, h_fea_len=128, n_out=len(config.property)).to(device)
@@ -371,6 +371,6 @@ def train(config, output):
         plt.savefig(output+"/final_performance.png")
 
     model.eval()
-        
+            
     return model
 
