@@ -201,7 +201,7 @@ def train(config, output):
                 epoch_targets.append(target)
                 
                 loss = criterion(scores, target)
-                # loss = torch.mean(abs(scores - target)*(0.1 + (target - torch.mean(target,dim=0))**2))
+                #loss = torch.mean(abs(scores - target)*(0.1 + (target - torch.mean(target,dim=0))**2))
                 epoch_loss_train[-1] += float(loss)
                 
                 # backward
@@ -356,6 +356,10 @@ def train(config, output):
         ax.set_aspect("equal","box")
 
         plt.savefig(output+"/final_performance.png", dpi=300)
+
+        if config.show_train:
+        
+            plt.show()
 
     model.eval()
             

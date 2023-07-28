@@ -336,5 +336,3 @@ def generate(n, output, config=None):
 
         i+=1
         j+=1
-        
-    plt.show()
