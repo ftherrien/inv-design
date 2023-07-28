@@ -99,7 +99,8 @@ def train(config, output):
     if config.model == "SimpleNet":
         model = SimpleNet(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1, 
                           atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, layer_list=config.layer_list, n_out=len(config.property),
-                          pooling=config.pooling, dropout = config.dropout, batch_norm=config.batch_norm).to(device)
+                          pooling=config.pooling, dropout = config.dropout, batch_norm=config.batch_norm,
+                          multiplier=config.output_multiplier).to(device)
     else:
         model = CGCNN(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1,
                       atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, h_fea_len=128, n_out=len(config.property)).to(device)
@@ -119,39 +120,25 @@ def train(config, output):
         #gen = gen[torch.randperm(len(gen))]
         
         dataset_dict = dict()
+
+        for dset in config.datasets:
         
-        if "qm9" in config.datasets:
+            if dset == "qm9":
+                
+                dataset_dict[dset] = QM9(output + "/" + dset, pre_filter=keep_in)
+                dataset_dict[dset] = dataset_dict[dset][torch.randperm(len(dataset_dict[dset]))]
             
-            dataset_dict["qm9"] = QM9(output + "/dataset", pre_filter=keep_in)
-            dataset_dict["qm9"] = dataset_dict["qm9"][torch.randperm(len(dataset_dict["qm9"]))]
-
-            if ["H", "C", "N", "O", "F"] != config.type_list:
-                raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types)) 
+                if ["H", "C", "N", "O", "F"] != config.type_list:
+                    raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types)) 
+                
+            else:
             
-        if "gen" in config.datasets:
-
-            dataset_dict["gen"] = QM9like(output+"/gen_dataset", raw_name="generated_dataset", pre_filter=keep_in)
-            dataset_dict["gen"] = gen[torch.randperm(len(gen))]
-
-            if list(dataset_dict["gen"].types) != config.type_list:
-                raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types))
+                dataset_dict[dset] = QM9like(output + "/" + dset, pre_filter=keep_in)
+                dataset_dict[dset] = dataset_dict[dset][torch.randperm(len(dataset_dict[dset]))]
             
-        if "ogb" in config.datasets:
-            
-            dataset_dict["ogb"] = QM9like(output+"/ogb_dataset", raw_name="ogb", pre_filter=keep_in)
-            dataset_dict["ogb"] = dataset_dict["ogb"][torch.randperm(len(dataset_dict["ogb"]))]
-
-            if list(dataset_dict["ogb"].types) != config.type_list:
-                raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types))
-            
-        if "cep" in config.datasets:
-            
-            dataset_dict["cep"] = QM9like(output+"/cep_dataset", raw_name="cep", pre_filter=keep_in)
-            dataset_dict["cep"] = dataset_dict["cep"][torch.randperm(len(dataset_dict["cep"]))]
-
-            if list(dataset_dict["cep"].types) != config.type_list:
-                raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types))
-            
+                if list(dataset_dict[dset].types) != config.type_list:
+                    raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict[dset].types))
+                        
         all_train = torch.utils.data.ConcatDataset([data[:len(data)-len(data)//10] for data in dataset_dict.values()])
         all_valid = torch.utils.data.ConcatDataset([data[len(data)-len(data)//10:] for data in dataset_dict.values()])
 
@@ -287,7 +274,7 @@ def train(config, output):
         torch.save(model.state_dict(), output+'/model_weights.pth')
         
         plt.ioff()
-        plt.savefig(output+"/progress.png")
+        plt.savefig(output+"/progress.png", dpi=300)
 
         model.eval()
         with torch.no_grad():
@@ -368,7 +355,7 @@ def train(config, output):
         
         ax.set_aspect("equal","box")
 
-        plt.savefig(output+"/final_performance.png")
+        plt.savefig(output+"/final_performance.png", dpi=300)
 
     model.eval()
             

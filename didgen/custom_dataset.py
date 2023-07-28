@@ -136,7 +136,7 @@ class QM9like(InMemoryDataset):
     
     def __init__(self, root: str, transform: Optional[Callable] = None,
                  pre_transform: Optional[Callable] = None,
-                 pre_filter: Optional[Callable] = None, raw_name="generated_dataset", type_list = default_type_list, return_type_list=False):
+                 pre_filter: Optional[Callable] = None, raw_name="data", type_list = default_type_list, return_type_list=False):
         print(root, transform, pre_transform, pre_filter)
         self.raw_name = raw_name
         self.return_type_list = return_type_list

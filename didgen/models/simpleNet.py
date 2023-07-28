@@ -74,7 +74,7 @@ class SimpleNet(nn.Module):
     """
     def __init__(self, orig_atom_fea_len,
                  atom_fea_len=64, n_conv=3, layer_list=[128], n_out=1,
-                 classification=False, pooling="sum", dropout=None, batch_norm=False):
+                 classification=False, pooling="sum", dropout=None, batch_norm=False, multiplier=1):
         """
         Initialize CrystalGraphConvNet.
 
@@ -117,6 +117,8 @@ class SimpleNet(nn.Module):
             seq += (nn.Dropout(dropout), nn.Linear(layer_list[-1], n_out))
              
         self.deep = nn.Sequential(*seq)
+
+        self.multiplier = multiplier
         
     def forward(self, atom_fea, adj):
         """
@@ -161,4 +163,4 @@ class SimpleNet(nn.Module):
             
             mol_fea = pooling_weights.matmul(conv_fea).squeeze(dim=1) # pooling N0, N, F -> N0, F
 
-        return self.deep(mol_fea)
+        return self.deep(mol_fea)*self.multiplier
