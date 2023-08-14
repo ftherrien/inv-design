@@ -1,5 +1,6 @@
 from .models.CGCNN import CrystalGraphConvNet as CGCNN
 from .models.simpleNet import SimpleNet
+from .models.CrippenNet import CrippenNet, zinc_PARAMS
 from .custom_sampler import SubsetWeightedRandomSampler
 from .custom_dataset import QM9like
 
@@ -41,8 +42,6 @@ def prepare_data(data, N, extra_fea_matrix):
 
 def prepare_data_vector(data, N, extra_fea_matrix, shuffle=False):
     """Create explicit adjacency matrix and feature matrix vector from mini-batch"""
-
-    t = time.time()
         
     atom_fea = 1*data.x[:,:len(extra_fea_matrix)]
     
@@ -76,6 +75,23 @@ def prepare_data_vector(data, N, extra_fea_matrix, shuffle=False):
     
     return new_atom_fea, adj
 
+def prepare_target_vector(data, N):
+
+    target = data.atom_class
+    
+    new_target = torch.zeros(data.num_graphs, N, target.shape[1], device=target.device)
+        
+    switch_points = torch.where(data.batch[1:] - data.batch[:-1] == 1)[0] + 1
+
+    new_target_pieces = torch.tensor_split(target, switch_points.detach())
+    
+    # This can be vectorized: https://stackoverflow.com/questions/43146266/convert-list-of-lists-with-different-lengths-to-a-numpy-array
+    for i, ten in enumerate(new_target_pieces):
+        new_target[i,:ten.shape[0],:] = ten
+    
+    return new_target
+
+
 def add_extra_features(features, extra_fea_matrix):
     return torch.cat([features, torch.matmul(features[:,:len(extra_fea_matrix)], extra_fea_matrix)],dim=1)
                 
@@ -96,14 +112,17 @@ def train(config, output):
         
     # Initialize network
 
-    if config.model == "SimpleNet":
+    if config.model == "CGCNN":
+        model = CGCNN(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1,
+                      atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, h_fea_len=128, n_out=len(config.property)).to(device)
+    elif config.model == "CrippenNet":
+        model = CrippenNet(config._extra_fea_matrix.shape[0], n_conv=config.n_conv, layer_list=config.layer_list, classifier=config.atom_class).to(device)
+        
+    else:
         model = SimpleNet(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1, 
                           atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, layer_list=config.layer_list, n_out=len(config.property),
                           pooling=config.pooling, dropout = config.dropout, batch_norm=config.batch_norm,
                           multiplier=config.output_multiplier).to(device)
-    else:
-        model = CGCNN(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1,
-                      atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, h_fea_len=128, n_out=len(config.property)).to(device)
 
     if config.use_pretrained or config.transfer_learn:
         if os.path.isfile(output+'/model_weights.pth'):
@@ -133,12 +152,9 @@ def train(config, output):
                 
             else:
             
-                dataset_dict[dset] = QM9like(output + "/" + dset, pre_filter=keep_in)
+                dataset_dict[dset] = QM9like(output + "/" + dset, pre_filter=keep_in, type_list = config.type_list, atom_class=config.atom_class)
                 dataset_dict[dset] = dataset_dict[dset][torch.randperm(len(dataset_dict[dset]))]
-            
-                if list(dataset_dict[dset].types) != config.type_list:
-                    raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict[dset].types))
-                        
+                                    
         all_train = torch.utils.data.ConcatDataset([data[:len(data)-len(data)//10] for data in dataset_dict.values()])
         all_valid = torch.utils.data.ConcatDataset([data[len(data)-len(data)//10:] for data in dataset_dict.values()])
 
@@ -155,7 +171,11 @@ def train(config, output):
         #loader_gen = DataLoader(gen, batch_size = len(gen), shuffle=True) #sampler=valid_sampler)
         
         # Loss and optimizer
-        criterion = nn.L1Loss()
+        if config.atom_class:
+            criterion = nn.CrossEntropyLoss()
+        else:
+            criterion = nn.L1Loss()
+
         optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
         #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=20)
         
@@ -167,9 +187,13 @@ def train(config, output):
         ax1.plot([],'b',label = 'Train')
         ax1.plot([],'r',label = 'Validation')
         #ax1.plot([],'orange',label = 'Generated')
-        ax1.set_yscale("log")
+        if config.atom_class:
+            ax1.set_yscale("log")
         ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('MAE (eV)')
+        if config.atom_class:
+            ax1.set_ylabel('Cross Entropy')
+        else:
+            ax1.set_ylabel('MAE (eV)')
         ax1.legend(loc=2)
         
         # Train Network
@@ -194,13 +218,34 @@ def train(config, output):
                 
                 # forward
                 scores = model(*inputs)
-                
-                target = data.y[:,config.property]
+
+                if config.atom_class:
+                    target = prepare_target_vector(data, config.max_size)
+
+                    epoch_scores.append(torch.sum(scores.detach().matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
+                    epoch_targets.append(torch.sum(target.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
+                else:
+                    target = data.y[:,config.property]
     
-                epoch_scores.append(scores.detach())
-                epoch_targets.append(target)
-                
+                    epoch_scores.append(scores.detach())
+                    epoch_targets.append(target)
+
+
+                # if epoch > 95:
+                #     for l in range(config.max_size):
+                #         print(l)
+                #         print(scores[0,l,:])
+                #         print(target[0,l,:])
+                #         print("-----------------------------------")
+                        
+                #     print(torch.sum(scores.detach().matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1)[:10])
+                #     print(torch.sum(target.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1)[:10])
+                #     print(data.y[:10,config.property])
+                    
+                #     input()
+                    
                 loss = criterion(scores, target)
+                #loss = criterion(torch.sum(scores.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1), torch.sum(target.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
                 #loss = torch.mean(abs(scores - target)*(0.1 + (target - torch.mean(target,dim=0))**2))
                 epoch_loss_train[-1] += float(loss)
                 
@@ -222,10 +267,17 @@ def train(config, output):
                     
                     # forward
                     scores_valid = model(*prepare_data_vector(data, config.max_size, config._extra_fea_matrix))
-                    target_valid = data.y[:,config.property]
+
+                    if config.atom_class:
+                        target_valid = prepare_target_vector(data, config.max_size)
+
+                        epoch_scores_valid.append(torch.sum(scores_valid.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
+                        epoch_targets_valid.append(torch.sum(target_valid.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
+                    else:
+                        target_valid = data.y[:,config.property]
                 
-                    epoch_scores_valid.append(scores_valid)
-                    epoch_targets_valid.append(target_valid)
+                        epoch_scores_valid.append(scores_valid)
+                        epoch_targets_valid.append(target_valid)
                     
                     loss = criterion(scores_valid, target_valid)
                     epoch_loss_valid[-1] += float(loss)
@@ -285,9 +337,13 @@ def train(config, output):
                 data = data.to(device=device)
                 
                 inputs = prepare_data_vector(data, config.max_size, config._extra_fea_matrix, shuffle=True)
-                            
-                scores = model(*inputs)
-                target = data.y[:,config.property]
+                
+                if config.atom_class:
+                    scores = torch.sum(model(*inputs).matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1)
+                    target = torch.sum(prepare_target_vector(data, config.max_size).matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1)
+                else:
+                    scores = model(*inputs)
+                    target = data.y[:,config.property]
                 
                 epoch_scores.append(scores)
                 epoch_targets.append(target)
@@ -300,8 +356,12 @@ def train(config, output):
                     data = data.to(device=device)
                 
                     # forward
-                    scores_valid = model(*prepare_data_vector(data, config.max_size, config._extra_fea_matrix))
-                    target_valid = data.y[:,config.property]
+                    if config.atom_class:
+                        scores_valid = torch.sum(model(*prepare_data_vector(data, config.max_size, config._extra_fea_matrix)).matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1)
+                        target_valid = torch.sum(prepare_target_vector(data, config.max_size).matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1)
+                    else:
+                        scores_valid = model(*prepare_data_vector(data, config.max_size, config._extra_fea_matrix))
+                        target_valid = data.y[:,config.property]
             
                     epoch_scores_valid.append(scores_valid)
                     epoch_targets_valid.append(target_valid)
@@ -327,14 +387,14 @@ def train(config, output):
         
         plt.plot(train_targets, train_scores, ".", alpha=0.1)
         
-        print("FINAL TRAIN MAE", criterion(torch.cat(epoch_targets), torch.cat(epoch_scores)))
+        print("FINAL TRAIN MAE", torch.mean(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))))
 
         valid_targets = torch.cat(epoch_targets_valid).cpu()
         valid_scores = torch.cat(epoch_scores_valid).cpu().detach().numpy()
         
         plt.plot(valid_targets, valid_scores,".", alpha=0.1)
         
-        print("FINAL VALID MAE", criterion(torch.cat(epoch_targets_valid), torch.cat(epoch_scores_valid)))
+        print("FINAL VALID MAE", torch.mean(abs(torch.cat(epoch_targets_valid) - torch.cat(epoch_scores_valid))))
 
         #gen_targets = torch.cat(epoch_targets_gen).cpu()
         #gen_scores = torch.cat(epoch_scores_gen).cpu().detach().numpy()
@@ -362,6 +422,8 @@ def train(config, output):
             plt.show()
 
     model.eval()
+
+    raise
             
     return model
 

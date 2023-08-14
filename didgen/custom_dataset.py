@@ -14,6 +14,8 @@ from torch_geometric.data import (
 )
 from torch_geometric.utils import one_hot, scatter
 
+import pickle
+
 HAR2EV = 27.211386246
 KCALMOL2EV = 0.04336414
 
@@ -136,8 +138,9 @@ class QM9like(InMemoryDataset):
     
     def __init__(self, root: str, transform: Optional[Callable] = None,
                  pre_transform: Optional[Callable] = None,
-                 pre_filter: Optional[Callable] = None, raw_name="data", type_list = default_type_list, return_type_list=False):
+                 pre_filter: Optional[Callable] = None, raw_name="data", type_list = default_type_list, return_type_list=False, atom_class=False):
         print(root, transform, pre_transform, pre_filter)
+        self.atom_class = atom_class
         self.raw_name = raw_name
         self.return_type_list = return_type_list
         if self.return_type_list:
@@ -166,7 +169,7 @@ class QM9like(InMemoryDataset):
     @property
     def raw_file_names(self) -> List[str]:
         import rdkit  # noqa
-        return [self.raw_name + '.sdf', self.raw_name + '.csv']
+        return [self.raw_name + '.sdf', self.raw_name + '.csv', self.raw_name + '.pkl']
         
     @property
     def processed_file_names(self) -> str:
@@ -221,18 +224,23 @@ class QM9like(InMemoryDataset):
             target = torch.tensor(target, dtype=torch.float)
             target = torch.cat([target[:, 3:], target[:, :3]], dim=-1)
 
+            
+        if self.atom_class:
+            atom_classes = pickle.load(open(self.raw_paths[2], "rb"))
+            
         suppl = Chem.SDMolSupplier(self.raw_paths[0], removeHs=False,
                                    sanitize=False)
 
-        for mol in tqdm(suppl):
-            for atom in mol.GetAtoms():
-                symb = atom.GetSymbol()
-                nb = sum([b.GetBondTypeAsDouble() for b in atom.GetBonds()])
-                if symb in self.types:
-                    if nb not in self.types[symb][1]:
-                        self.types[symb][1].append(nb)
-                else:
-                    self.types[symb] = [len(self.types), [nb]]
+        if self.return_type_list:
+            for mol in tqdm(suppl):
+                for atom in mol.GetAtoms():
+                    symb = atom.GetSymbol()
+                    nb = sum([b.GetBondTypeAsDouble() for b in atom.GetBonds()])
+                    if symb in self.types:
+                        if nb not in self.types[symb][1]:
+                            self.types[symb][1].append(nb)
+                    else:
+                        self.types[symb] = [len(self.types), [nb]]
         
         data_list = []
         for i, mol in enumerate(tqdm(suppl)):
@@ -288,13 +296,22 @@ class QM9like(InMemoryDataset):
             x1 = one_hot(torch.tensor(type_idx), num_classes=len(self.types))
             x2 = torch.tensor([atomic_number, aromatic, sp, sp2, sp3, num_hs],
                               dtype=torch.float).t().contiguous()
+            
             x = torch.cat([x1, x2], dim=-1)
 
             y = target[i].unsqueeze(0)
-            name = mol.GetProp('_Name')
 
-            data = Data(x=x, z=z, pos=pos, edge_index=edge_index,
-                        edge_attr=edge_attr, y=y, name=name, idx=i)
+            name = mol.GetProp('_Name')
+            
+            if self.atom_class:
+                atom_class = one_hot(torch.tensor(atom_classes[i]), num_classes=69)
+
+                data = Data(x=x, z=z, pos=pos, edge_index=edge_index,
+                            edge_attr=edge_attr, y=y, name=name, idx=i, atom_class=atom_class)
+            else:
+                
+                data = Data(x=x, z=z, pos=pos, edge_index=edge_index,
+                            edge_attr=edge_attr, y=y, name=name, idx=i)
 
             if self.pre_filter is not None and not self.pre_filter(data):
                 continue
