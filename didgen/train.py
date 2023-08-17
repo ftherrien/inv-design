@@ -15,6 +15,7 @@ import os
 import time
 from scipy.optimize import curve_fit
 import pickle
+from tqdm import tqdm
 
 def gauss(x, a, x0, sigma):
     return a*np.exp(-(x-x0)**2/(2*sigma**2))
@@ -83,13 +84,47 @@ def prepare_target_vector(data, N):
         
     switch_points = torch.where(data.batch[1:] - data.batch[:-1] == 1)[0] + 1
 
-    new_target_pieces = torch.tensor_split(target, switch_points.detach())
+    new_target_pieces = torch.tensor_split(target, switch_points.cpu())
     
     # This can be vectorized: https://stackoverflow.com/questions/43146266/convert-list-of-lists-with-different-lengths-to-a-numpy-array
     for i, ten in enumerate(new_target_pieces):
         new_target[i,:ten.shape[0],:] = ten
     
     return new_target
+
+def class_stats(loader_train, show=False):
+
+    class_sum = []
+    for batch_idx, data in enumerate(tqdm(loader_train)):
+        class_sum.append(torch.sum(data.atom_class,dim=0).unsqueeze(0))
+
+ 
+    class_sum = torch.cat(class_sum, dim=0)
+
+    class_sum = torch.sum(class_sum, dim=0)
+
+    if show:
+        plt.figure()
+
+        plt.bar(torch.arange(len(class_sum)), class_sum)
+
+        ax = plt.gca()
+
+        ax.set_yscale('log')
+    
+        plt.show()
+
+    weights = 1/(class_sum + 1)
+
+    weights[:28]   = weights[:28]  /torch.sum(weights[:28])
+    weights[28:41] = weights[28:41]/torch.sum(weights[28:41])
+    weights[41:56] = weights[41:56]/torch.sum(weights[41:56])
+    weights[56] = 1
+    weights[57:62] = weights[57:62]/torch.sum(weights[57:62])
+    weights[62:65] = weights[62:65]/torch.sum(weights[62:65])
+    weights[65:] = 1
+    
+    return weights
 
 
 def add_extra_features(features, extra_fea_matrix):
@@ -117,7 +152,6 @@ def train(config, output):
                       atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, h_fea_len=128, n_out=len(config.property)).to(device)
     elif config.model == "CrippenNet":
         model = CrippenNet(config._extra_fea_matrix.shape[0], n_conv=config.n_conv, layer_list=config.layer_list, classifier=config.atom_class).to(device)
-        
     else:
         model = SimpleNet(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1, 
                           atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, layer_list=config.layer_list, n_out=len(config.property),
@@ -167,12 +201,13 @@ def train(config, output):
         
         loader_train = DataLoader(all_train, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
         loader_valid = DataLoader(all_valid, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
-
+        
         #loader_gen = DataLoader(gen, batch_size = len(gen), shuffle=True) #sampler=valid_sampler)
         
         # Loss and optimizer
         if config.atom_class:
-            criterion = nn.CrossEntropyLoss()
+            weights = class_stats(loader_train, config.show_train)
+            criterion = nn.CrossEntropyLoss(weight=weights)
         else:
             criterion = nn.L1Loss()
 
@@ -222,8 +257,14 @@ def train(config, output):
                 if config.atom_class:
                     target = prepare_target_vector(data, config.max_size)
 
+                    accuracy = torch.sum(torch.argmax(target, dim=2) == torch.argmax(scores, dim=2))/(target.shape[0]*target.shape[1])
+                    
                     epoch_scores.append(torch.sum(scores.detach().matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
                     epoch_targets.append(torch.sum(target.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
+
+                    scores = scores.permute((0,2,1))
+                    target = target.permute((0,2,1))
+                    
                 else:
                     target = data.y[:,config.property]
     
@@ -243,7 +284,7 @@ def train(config, output):
                 #     print(data.y[:10,config.property])
                     
                 #     input()
-                    
+                
                 loss = criterion(scores, target)
                 #loss = criterion(torch.sum(scores.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1), torch.sum(target.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
                 #loss = torch.mean(abs(scores - target)*(0.1 + (target - torch.mean(target,dim=0))**2))
@@ -273,6 +314,9 @@ def train(config, output):
 
                         epoch_scores_valid.append(torch.sum(scores_valid.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
                         epoch_targets_valid.append(torch.sum(target_valid.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
+
+                        scores_valid = scores_valid.permute((0,2,1))
+                        target_valid = target_valid.permute((0,2,1))
                     else:
                         target_valid = data.y[:,config.property]
                 
@@ -422,8 +466,6 @@ def train(config, output):
             plt.show()
 
     model.eval()
-
-    raise
-            
+    
     return model
 
