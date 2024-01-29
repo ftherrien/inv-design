@@ -181,6 +181,8 @@ class CrippenNet(nn.Module):
         
         self.nonlinear = nn.Sigmoid()
 
+        self.linears = nn.ModuleList([nn.Linear(self.fea_len, self.fea_len) for _ in range(n_conv)])
+        
         self.softmax = nn.Softmax(dim=2)
         
         self.n_conv = n_conv
@@ -197,12 +199,19 @@ class CrippenNet(nn.Module):
         atom_fea = atom_fea[:,:,:self.fea_len]
 
         atom_feas = [atom_fea]
-        for _ in range(self.n_conv):
+        for linear in self.linears:
+            # atom_feas.append(self.nonlinear(linear(adj.matmul(atom_feas[-1]))))
             atom_feas.append(adj.matmul(atom_feas[-1]))
 
+
         atom_feas = torch.cat(atom_feas[1:], dim=2)
-            
+
+        #atom_feas = torch.cat((atom_feas, torch.sort(adj, descending=True, dim=2)[0][:,:,:4]), dim=2)
+
+        #atom_feas = torch.cat((atom_feas, adj.view(adj.shape[0],-1).unsqueeze(1).expand(adj.shape[0],atom_feas.shape[1],-1)), dim=2)
+        
         C_type = self.softmax(self.C_NN(atom_feas)) # 28
+        #C_type = atom_feas[:,:,:28]
         O_type = self.softmax(self.O_NN(atom_feas)) # 13
         N_type = self.softmax(self.N_NN(atom_feas)) # 15
         H_type = self.softmax(self.H_NN(atom_feas)) # 5
