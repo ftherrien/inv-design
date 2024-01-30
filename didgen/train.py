@@ -116,13 +116,13 @@ def class_stats(loader_train, show=False):
 
     weights = 1/(class_sum + 1)
 
-    weights[:28]   = weights[:28]  /torch.sum(weights[:28])
-    weights[28:41] = weights[28:41]/torch.sum(weights[28:41])
-    weights[41:56] = weights[41:56]/torch.sum(weights[41:56])
-    weights[56] = 1
-    weights[57:62] = weights[57:62]/torch.sum(weights[57:62])
-    weights[62:65] = weights[62:65]/torch.sum(weights[62:65])
-    weights[65:] = 1
+    #weights[:28]   = weights[:28]  /torch.sum(weights[:28])
+    #weights[28:41] = weights[28:41]/torch.sum(weights[28:41])
+    #weights[41:56] = weights[41:56]/torch.sum(weights[41:56])
+    weights[56] = 0
+    #weights[57:62] = weights[57:62]/torch.sum(weights[57:62])
+    #weights[62:65] = weights[62:65]/torch.sum(weights[62:65])
+    weights[65:] = 0
     
     return weights
 

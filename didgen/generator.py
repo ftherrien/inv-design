@@ -203,7 +203,7 @@ def generate(n, output, config=None):
 
     config.bonding = torch.tensor(config.bonding, device=device)
 
-    config.bonding_mask = [(config.bonding == i) for i in set(config.bonding.tolist()) if sum(config.bonding == i) > 1] 
+    config.bonding_mask = [(config.bonding == i) for i in set(config.bonding.tolist()) if i > 0] 
     
     config._extra_fea_matrix = get_extra_features_matrix(config.type_list, config.extra_features, device)
 
@@ -240,7 +240,7 @@ def generate(n, output, config=None):
         print("------------------------------------")
         print("Molecule %d:"%i)
         
-        fea_h, adj_vec = initialize(config, output, j, device=device)
+        fea_h, adj_vec, config = initialize(config, output, j, device=device)
 
         init_atom_fea_ext, init_adj = weights_to_model_inputs(fea_h, adj_vec, config)
         
@@ -261,8 +261,11 @@ def generate(n, output, config=None):
 
         L = torch.diag(torch.sum((adj_round != 0),axis=0)) - (adj_round != 0)*1
 
-        n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - int(torch.sum(features[:,len(config.type_list)]))
-        
+        try:
+            n_comp = int(torch.sum(abs(torch.linalg.eigh(L.float())[0]) < 1e-5)) - int(torch.sum(features[:,len(config.type_list)]))
+        except:
+            n_comp = 2
+            
         if torch.sum(abs(r_bonds_per_atom - torch.sum(adj_round, dim=1))) > 1e-12 or n_iter_final == config.n_iter - 1:
             print("Generated molecule is not stochiometric")
             j+=1
@@ -281,10 +284,6 @@ def generate(n, output, config=None):
         val = model(atom_fea_ext_r, adj_r)
         print("Final property value after rounding:", val)
 
-        if torch.sum(abs(val - torch.tensor([config.target], device=val.device))) > config.stop_loss:
-            print("Target not actually reached!")
-            continue
-        
         print("Final property value after rounding (adj_r):", model(atom_fea_ext, adj_r))
         print("Final property value after rounding (fea_r):", model(atom_fea_ext_r, adj))
         
@@ -293,10 +292,15 @@ def generate(n, output, config=None):
         print(torch.max(abs(atom_fea_ext - atom_fea_ext_r)))
         print("ADJ")
         print(torch.max(abs(adj - adj_r)))
+
+        if torch.sum(abs(val - torch.tensor([config.target], device=val.device))) > config.stop_loss:
+            print("Target not actually reached!")
+            continue
+        
         # print(abs(atom_fea_ext - atom_fea_ext_r))
         # print(abs(adj - adj_r))
         
-        features, adj_round, smiles = draw_mol(atom_fea_ext, adj, config.type_list, output, index=i, embed=True, text=" ".join(["%f"]*(len(val[0])))%tuple(val[0].detach().tolist()), color=(0,255,0))
+        features, adj_round, smiles = draw_mol(atom_fea_ext, adj, config.type_list, output, index=i, embed=config.embed, text=" ".join(["%f"]*(len(val[0])))%tuple(val[0].detach().tolist()), color=(0,255,0))
         
         # print("STARTING ATOM FEA")
         # print(init_atom_fea_ext)
@@ -332,7 +336,7 @@ def generate(n, output, config=None):
         print(torch.sum(features,dim=0))
         
         # Print value to file
-        print(i, n_comp, smiles, " ".join(["%f"]*(len(val[0])))%tuple(val[0].detach().tolist()),file=f)
+        print(i, n_iter_final, smiles, " ".join(["%f"]*(len(val[0])))%tuple(val[0].detach().tolist()),file=f)
 
         i+=1
         j+=1

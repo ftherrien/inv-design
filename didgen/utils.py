@@ -36,7 +36,7 @@ def draw_mol(atom_fea_ext, adj, type_list, output, index=None, embed=False, text
     features, adj = round_mol(atom_fea_ext, adj, len(type_list))
     
     mol = MolFromGraph(features, adj, type_list)
-
+    
     if index is not None:
         pickle.dump(mol,open(output+"/xyzs/generated_mol_%d.pickle"%(index),"wb"))
     
