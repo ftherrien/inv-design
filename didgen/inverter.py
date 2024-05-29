@@ -42,7 +42,7 @@ def smooth_round(x, method="step"):
     if method=="sin":
         return (396*torch.pi*x - 225*torch.sin(2*torch.pi*x) + 45*torch.sin(4*torch.pi*x) - 5*torch.sin(6*torch.pi*x))/(396*torch.pi)
     elif method=="step":
-        return torch.round(x) + 0.01*(x - torch.round(x))
+        return torch.round(x) + 0.001*(x - torch.round(x))
 
 def smooth_max(x):
 
@@ -70,7 +70,7 @@ def smooth_onehot(x, p):
     # return torch.cos(torch.pi/2*(x-p))**2 * torch.heaviside(x-p+1,torch.tensor([0.0])) * (torch.heaviside(-x+p+1,torch.tensor([0.0])) if p < 4 else torch.heaviside(-x+p,torch.tensor([0.0]))) + (0 if p < 4 else torch.heaviside(x-p,torch.tensor([0.0])))
     #return torch.cos(torch.pi/2*(x-p))**2*((x >= p-1) & (x < p+1))*(x < 4) + (1*(x >= 4) if p==4 else 0)
     
-def weights_to_model_inputs(fea, adj_vec, config):
+def weights_to_model_inputs(fea, adj_vec, config, adj_only=False):
     
     device = adj_vec.device
     
@@ -90,6 +90,9 @@ def weights_to_model_inputs(fea, adj_vec, config):
     
     adj = smooth_round(adj, method=config.rounding)
 
+    if adj_only:
+        return adj.unsqueeze(0)
+    
     adj_sum = torch.sum(adj, dim=1).unsqueeze(1)
     
     fea_h = torch.zeros(fea.shape, device=device)
@@ -107,8 +110,8 @@ def weights_to_model_inputs(fea, adj_vec, config):
             fea_h[:, b] = smooth_max(fea[:, b]**2/torch.sum(fea[:, b]**2 + 1e-12,dim=1,keepdim=True))
             
     # print(adj_sum)
-            
-    #print(fea_h)
+
+    # print(fea_h)
 
     # input()
             
@@ -139,10 +142,8 @@ def weights_to_model_inputs(fea, adj_vec, config):
     atom_fea_adj = smooth_max(atom_fea_adj)
     
     atom_fea_ext = add_extra_features(atom_fea_adj, config._extra_fea_matrix).unsqueeze(0)
-        
-    adj = adj.unsqueeze(0)
 
-    return atom_fea_ext, adj 
+    return atom_fea_ext, adj.unsqueeze(0)
 
 def gauss(x, p):
     return torch.exp(-(x - p)**2/0.25)
@@ -232,9 +233,20 @@ def initialize(config, output, i, device="cpu"):
 
 
         if config.start_from == "!":
-            qmid = int(torch.randint(len(dataset),(1,)))
+            starting_tries = 1000
+            
+            size = config.starting_size + 1
+            tries = 0
+            while size > config.starting_size and tries < starting_tries:
+                qmid = int(torch.randint(len(dataset),(1,)))
+                size = len(dataset[qmid].x)
+
+            if tries == starting_tries:
+                raise RuntimeError("Could not find a molecule of the right size in dataset")
         else:
             qmid = int(config.start_from)
+            if len(dataset[qmid].x) > config.starting_size:
+                raise RuntimeError("Molecule larger than starting_size")
         
         fea_h, adj_vec = start_from(dataset[qmid].to(device), config)
 
@@ -615,7 +627,7 @@ def invert(model, fea_h, adj_vec, config, output):
         # gradient descent or adam step
         optimizer.step()
 
-        _, adj_tmp = weights_to_model_inputs(fea_h, adj_vec, config)
+        adj_tmp = weights_to_model_inputs(fea_h, adj_vec, config, adj_only=True)
 
         old_adj_sum = adj_sum
         
@@ -664,7 +676,7 @@ def invert(model, fea_h, adj_vec, config, output):
                 adj_vec[id_dont_move] = adj_vec_before[id_dont_move] #+ 0.001*(adj_vec[id_dont_move] - adj_vec_before[id_dont_move])
 
                 
-        _, adj_tmp = weights_to_model_inputs(fea_h, adj_vec, config)
+        adj_tmp = weights_to_model_inputs(fea_h, adj_vec, config, adj_only=True)
         
         adj_sum = torch.sum(adj_tmp, dim=1).squeeze()
                 
@@ -722,7 +734,7 @@ def invert(model, fea_h, adj_vec, config, output):
                 
         if e%10 == 0 and config.show_losses:
             #print(c[0], c[1], n_dip, float(loss), torch.max(abs(fea_h)), torch.max(abs(adj_vec)))
-            print(float(total_loss), float(loss), float(proportions), n_blank, score.detach().tolist(), torch.sum(abs(r_bonds_per_atom - torch.sum(r_adj, dim=1))) < 1e-12, (true_loss < config.stop_loss or loss < 1e-6), proportions < config.stop_prop)
+            print(float(total_loss), float(loss), "(", true_loss, ")", float(proportions), n_blank, score.detach().tolist(), torch.sum(abs(r_bonds_per_atom - torch.sum(r_adj, dim=1))) < 1e-12, (true_loss < config.stop_loss or loss < 1e-6), proportions < config.stop_prop)
             
         if e%30 == 0 and config.show_losses:
             plt.plot(total_losses,'k')

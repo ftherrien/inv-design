@@ -103,17 +103,27 @@ def class_stats(loader_train, show=False, device="cpu"):
 
     class_sum = torch.sum(class_sum, dim=0)
 
-    print("Init class_sum", class_sum/torch.sum(class_sum))
+    print("Init class_sum", class_sum)
 
+    print("Most common class: %1.10f, %d"%((class_sum/torch.sum(class_sum)).max(), class_sum.max()), class_sum.argmax())
+    print("Least common class: %1.10f, %d"%((class_sum/torch.sum(class_sum)).min(), class_sum.min()), class_sum.argmin())
+    print("Least common non-zero class: %1.10f, %d"%((class_sum[class_sum > 0]/torch.sum(class_sum)).min(), class_sum[class_sum > 0].min()), np.arange(len(class_sum))[class_sum > 0][class_sum[class_sum > 0].argmin()])
+
+    print("Total number of atoms", torch.sum(class_sum))
+    
     if show:
         plt.figure()
 
-        plt.bar(torch.arange(len(class_sum)), class_sum)
+        plt.bar(torch.arange(len(class_sum)), class_sum, color="navy")
 
         ax = plt.gca()
 
         ax.set_yscale('log')
-    
+
+        plt.xticks(np.array([28, 41, 56, 57, 62, 65, 66, 67, 68, 69])-0.5)
+
+        ax.tick_params(labelbottom=False)
+        
         plt.show()
 
     weights = 1/(class_sum + 1)
