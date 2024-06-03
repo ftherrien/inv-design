@@ -47,9 +47,7 @@ def prepare_data_vector(data, N, extra_fea_matrix, shuffle=False):
     atom_fea = 1*data.x[:,:len(extra_fea_matrix)]
     
     atom_fea = add_extra_features(torch.cat([atom_fea, torch.zeros(atom_fea.shape[0],1, device=atom_fea.device)], dim=1), extra_fea_matrix)
-    
-    #N = torch.max(torch.tensor([torch.sum(data.batch==i) for i in range(data.num_graphs)]))
-    
+        
     new_atom_fea = torch.zeros(data.num_graphs, N, atom_fea.shape[1], device=atom_fea.device)
         
     switch_points = torch.where(data.batch[1:] - data.batch[:-1] == 1)[0] + 1
@@ -77,7 +75,8 @@ def prepare_data_vector(data, N, extra_fea_matrix, shuffle=False):
     return new_atom_fea, adj
 
 def prepare_target_vector(data, N):
-
+    """Same as prepare_data_vector for individual atomic contributions"""
+    
     target = data.atom_class
     
     new_target = torch.zeros(data.num_graphs, N, target.shape[1], device=target.device)
@@ -103,13 +102,13 @@ def class_stats(loader_train, show=False, device="cpu"):
 
     class_sum = torch.sum(class_sum, dim=0)
 
-    print("Init class_sum", class_sum)
+    print("Number of atom for each class:", class_sum)
 
     print("Most common class: %1.10f, %d"%((class_sum/torch.sum(class_sum)).max(), class_sum.max()), class_sum.argmax())
     print("Least common class: %1.10f, %d"%((class_sum/torch.sum(class_sum)).min(), class_sum.min()), class_sum.argmin())
     print("Least common non-zero class: %1.10f, %d"%((class_sum[class_sum > 0]/torch.sum(class_sum)).min(), class_sum[class_sum > 0].min()), np.arange(len(class_sum))[class_sum > 0][class_sum[class_sum > 0].argmin()])
 
-    print("Total number of atoms", torch.sum(class_sum))
+    print("Total number of atoms:", torch.sum(class_sum))
     
     if show:
         plt.figure()
@@ -172,9 +171,6 @@ def train(config, output):
         
         def keep_in(data):
             return len(data.x) <= config.max_size
-
-        #gen = QM9like(output+"/gen_dataset", raw_name="generated_dataset", pre_filter=keep_in)
-        #gen = gen[torch.randperm(len(gen))]
         
         dataset_dict = dict()
 
@@ -183,7 +179,6 @@ def train(config, output):
             if dset == "qm9":
                 
                 dataset_dict[dset] = QM9(output + "/" + dset, pre_filter=keep_in)
-                #dataset_dict[dset] = dataset_dict[dset][torch.randperm(len(dataset_dict[dset]))] #TMP
             
                 if ["H", "C", "N", "O", "F"] != config.type_list:
                     raise RuntimeError("type_list is incompatible with dataset", list(dataset_dict["qm9"].types)) 
@@ -199,41 +194,28 @@ def train(config, output):
         if config.n_data < len(all_train) + len(all_valid):
             
             all_train = Subset(all_train, torch.randperm(config.n_data - config.n_data//10))
-            all_valid = Subset(all_valid, torch.tensor([0,1])) # TMP torch.randperm(config.n_data//10))
+            all_valid = Subset(all_valid, torch.randperm(config.n_data//10))
         
         print("Size of database:", len(all_train) + len(all_valid))
         
-        loader_train = DataLoader(all_train, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
-        loader_valid = DataLoader(all_valid, batch_size = config.batch_size, shuffle=True) #sampler=train_sampler)
-        
-        #loader_gen = DataLoader(gen, batch_size = len(gen), shuffle=True) #sampler=valid_sampler)
-        
+        loader_train = DataLoader(all_train, batch_size = config.batch_size, shuffle=True)
+        loader_valid = DataLoader(all_valid, batch_size = config.batch_size, shuffle=True)
+                
         # Loss and optimizer
         if config.atom_class:
             weights = class_stats(loader_train, config.show_train, device)
-            #weights[:2] = 0 # TMP
-            #weights[10:] = 0 # TMP
-            print("Weights:", weights)
-            #criterion = nn.CrossEntropyLoss(weight=weights)
-            #criterion = nn.CrossEntropyLoss(weight=abs(torch.tensor(zinc_PARAMS, device=device)))
-            #criterion = nn.CrossEntropyLoss()
             criterion = nn.NLLLoss()
-            #criterion = nn.L1Loss() #TMP
 
-            alpha = 0.001
+            if config.alpha > 0:
             
-            cost_matrix = abs(torch.tensor(zinc_PARAMS, device=device).unsqueeze(1).expand(len(zinc_PARAMS), len(zinc_PARAMS)) - torch.tensor(zinc_PARAMS, device=device).unsqueeze(0).expand(len(zinc_PARAMS), len(zinc_PARAMS)))
+                cost_matrix = abs(torch.tensor(zinc_PARAMS, device=device).unsqueeze(1).expand(len(zinc_PARAMS), len(zinc_PARAMS)) - torch.tensor(zinc_PARAMS, device=device).unsqueeze(0).expand(len(zinc_PARAMS), len(zinc_PARAMS)))
             
-            cost_matrix = cost_matrix/torch.max(cost_matrix)
-
-
-            print("COST MATRIX", cost_matrix.shape, cost_matrix.max(), cost_matrix[0,0])
+                cost_matrix = cost_matrix/torch.max(cost_matrix)
             
         else:
             criterion = nn.L1Loss()
 
         optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=20)
         
         # Initialize plot
         plt.ion()
@@ -242,7 +224,6 @@ def train(config, output):
         ax2 = fig.add_subplot(1,2,2)
         ax1.plot([],'b',label = 'Train')
         ax1.plot([],'r',label = 'Validation')
-        #ax1.plot([],'orange',label = 'Generated')
         if config.atom_class:
             ax1.set_yscale("log")
         ax1.set_xlabel('Epoch')
@@ -255,10 +236,7 @@ def train(config, output):
         # Train Network
         epoch_loss_train = []
         epoch_loss_valid = []
-        # epoch_loss_gen = []
         training_time = time.time()
-
-        print("Memory allocated going in:", torch.cuda.memory_allocated(device=device))
         
         for epoch in range(config.num_epochs):
     
@@ -266,18 +244,11 @@ def train(config, output):
 
             if config.atom_class:
                 if epoch != 0:
-                    #print(class_sum)
-                    print("Wrong classes ----", flush=True)
-                    print(torch.sum(all_stats, dim=1)/(class_sum + 1e-12))
+                    # Fraction of each class that is wrongly classified
                     perf = torch.sum(all_stats, dim=1)/(class_sum + 1e-12)
                     epoch_weights = weights*(1+2*perf)
-                    print("****")
-                    print(all_stats[5,:])
-                    #print("----------------------")
                 else:
                     epoch_weights = weights
-                
-            # epoch_weights = weights
             
             epoch_loss_train.append(0)
             epoch_scores = []
@@ -287,7 +258,6 @@ def train(config, output):
             all_stats = torch.zeros(len(zinc_PARAMS), len(zinc_PARAMS), device=device)
             class_sum = torch.zeros(len(zinc_PARAMS), device=device)
 
-            print("Memory allocated before batch 1:", torch.cuda.memory_allocated(device=device))
             for batch_idx, data in enumerate(loader_train):
                 # Get data to cuda if possible
                 data = data.to(device=device)
@@ -298,7 +268,6 @@ def train(config, output):
                 
                 # forward
                 torch.cuda.empty_cache()
-                # print("Memory allocated before forward:", torch.cuda.memory_allocated(device=device))
                 scores = model(*inputs)
 
                 if config.atom_class:
@@ -308,17 +277,13 @@ def train(config, output):
                     target = target.view(-1, target.shape[2])
                     scores = scores.view(-1, scores.shape[2])
 
-                    #randomselect = torch.multinomial(target.matmul(epoch_weights), target.shape[0], replacement=True)
-                    randomselect = torch.multinomial(target.matmul(epoch_weights), 67*100, replacement=True)
+                    # Random undersampling
+                    randomselect = torch.multinomial(target.matmul(epoch_weights), config.n_rand_samples, replacement=True)
                     
                     target = target[randomselect,:]
                     scores = scores[randomselect,:]
 
-                    #print("SCORES example", scores[:5,:30])
-                    #print("TARGET example", target[:5,:30])
-
-                    #print("Repartition:", torch.sum(target,dim=0), flush=True)
-                    
+                    # Statistics
                     class_sum += torch.sum(target,dim=0)
 
                     scores_zeros = torch.sum(scores, dim=1)==0
@@ -343,8 +308,10 @@ def train(config, output):
                     epoch_scores.append(torch.sum(scores.detach().matmul(torch.tensor(zinc_PARAMS, device=device))).unsqueeze(0))
                     epoch_targets.append(torch.sum(target.matmul(torch.tensor(zinc_PARAMS, device=device))).unsqueeze(0))
 
-                    loss = (1-alpha)*criterion(scores, torch.argmax(target, dim=1)) + alpha*torch.sum(target.matmul(cost_matrix)*scores)
-                    
+                    if config.alpha > 0:
+                        loss = (1-config.alpha)*criterion(scores, torch.argmax(target, dim=1)) + config.alpha*torch.sum(target.matmul(cost_matrix)*scores)
+                    else:
+                        loss = criterion(scores, torch.argmax(target, dim=1))
                 else:
                     target = data.y[:,config.property]
     
@@ -352,16 +319,11 @@ def train(config, output):
                     epoch_targets.append(target)
 
                     loss = criterion(scores, target)
-                    
-                #loss = criterion(torch.sum(scores.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1), torch.sum(target.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1))
-                #loss = torch.mean(abs(scores - target)*(0.1 + (target - torch.mean(target,dim=0))**2))
 
                 if config.atom_class:
                     epoch_loss_train[-1] += float(torch.mean(abs(epoch_scores[-1] - epoch_targets[-1])))
                 else:
                     epoch_loss_train[-1] += float(loss)
-
-                #print("Actual loss", loss, flush=True)          
                 
                 # backward
                 optimizer.zero_grad()
@@ -410,25 +372,18 @@ def train(config, output):
                 
             epoch_loss_train[-1] = epoch_loss_train[-1]/len(loader_train)
             epoch_loss_valid[-1] = epoch_loss_valid[-1]/len(loader_valid)
-            #epoch_loss_gen[-1] = epoch_loss_gen[-1]/len(loader_gen)
-            #print(epoch, "AVG TRAIN MAE", float(epoch_loss_train[-1]), "AVG VALID MAE", float(epoch_loss_valid[-1]), "AVG GEN MAE", float(epoch_loss_gen[-1]), flush=True)
             
             if config.atom_class:
                 print(epoch, "AVG random TRAIN MAE", float(epoch_loss_train[-1]), "AVG VALID MAE", float(epoch_loss_valid[-1]), "TRAIN ACCURACY", correct/total,"VALID ACCURACY", correct_valid/total_valid, flush=True)
             else:
                 print(epoch, "AVG TRAIN MAE", float(epoch_loss_train[-1]), "AVG VALID MAE", float(epoch_loss_valid[-1]), flush=True)
-                
-            #scheduler.step(epoch_loss_train[-1])
             
             if epoch%10 == 0:
                 ax2.clear()
                 ax1.plot(epoch_loss_valid[:-1],'r',label = 'Validation')
-                # ax1.plot(epoch_loss_gen[:-1],'orange',label = 'Generated')
                 ax1.plot(epoch_loss_train[1:],'b',label = 'Train')
-                # ax1.axhline(std, color = 'k', label = 'STD')
                 ax2.plot(torch.cat(epoch_targets).cpu(), torch.cat(epoch_scores).cpu().detach().numpy(), ".", alpha=0.1)
                 ax2.plot(torch.cat(epoch_targets_valid).cpu(), torch.cat(epoch_scores_valid).cpu().detach().numpy(), ".", alpha=0.1)
-                # ax2.plot(torch.cat(epoch_targets_gen).cpu(), torch.cat(epoch_scores_gen).cpu().detach().numpy(), ".", alpha=0.1)
                 x = np.linspace(0,18,300)
                 ax2.fill_between(x, x+1, x-1, color="gray", alpha=0.1)
                 ax2.plot(x, x, color="k", alpha=0.5)
@@ -464,17 +419,11 @@ def train(config, output):
 
                     class_sum += torch.sum(data.atom_class,dim=0)
 
-                    #print("atom_class shape", data.atom_class.shape)
-
                     scores_zeros = torch.sum(scores, dim=2)==0
                     target_zeros = torch.sum(target, dim=2)==0
-
-                    #print("Same zeros?", torch.sum(target_zeros != scores_zeros))
                     
                     scores_max = torch.argmax(scores, dim=2)
                     target_max = torch.argmax(target, dim=2)
-
-                    #print("target_max", target_max.shape)
                     
                     correct += torch.sum((target_max == scores_max) | scores_zeros)
                     total += target.shape[0]*target.shape[1]
@@ -489,10 +438,7 @@ def train(config, output):
                     
                     stats = torch.sum(stats, dim=0)
 
-                    all_stats += stats 
-                    
-                    #target[torch.arange(target.shape[0]).unsqueeze(1),torch.arange(target.shape[1]).unsqueeze(0)]
-                    
+                    all_stats += stats
                     
                     single_class_scores = torch.sum(torch.tensor(zinc_PARAMS, device=device)[scores_max]*(~scores_zeros), dim=1) #TMP scores_max
                     scores = torch.sum(scores.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1)
@@ -524,28 +470,11 @@ def train(config, output):
                     epoch_scores_valid.append(scores_valid)
                     epoch_targets_valid.append(target_valid)
 
-                # epoch_scores_gen = []
-                # epoch_targets_gen = []
-                # for batch_idx, data in enumerate(loader_gen):
-                #     # Get data to cuda if possible
-                #     data = data.to(device=device)
-                
-                #     # forward
-                #     scores_gen = model(*prepare_data_vector(data, config.max_size, config._extra_fea_matrix))
-                #     target_gen = data.y[:,config.property]
-            
-                #     epoch_scores_gen.append(scores_gen)
-                #     epoch_targets_gen.append(target_gen)
-
         plt.figure()
 
-        print("CLASS STATS")
+        print("Missclassification statistics per class (fraction wrong):")
 
         print(torch.sum(all_stats, dim=1)/class_sum)
-        print(class_sum)
-
-        print("PROBLEM CLASS 5")
-        print(all_stats[5,:])
         
         print("FINAL TRAIN ACCURACY", correct/total)
 
@@ -569,13 +498,6 @@ def train(config, output):
         plt.plot(valid_targets, valid_scores,".", alpha=0.1)
         
         print("FINAL VALID MAE", torch.mean(abs(torch.cat(epoch_targets_valid) - torch.cat(epoch_scores_valid))))
-
-        #gen_targets = torch.cat(epoch_targets_gen).cpu()
-        #gen_scores = torch.cat(epoch_scores_gen).cpu().detach().numpy()
-        
-        #plt.plot(gen_targets, gen_scores,".", alpha=0.1)
-        
-        #print("FINAL GEN MAE", criterion(torch.cat(epoch_targets_gen), torch.cat(epoch_scores_gen)))
         
         pickle.dump((train_targets, train_scores, valid_targets, valid_scores), open(output+"/final_performance_data.pkl","wb"))
         pickle.dump(all_stats, open(output+"/class_stats.pkl","wb"))

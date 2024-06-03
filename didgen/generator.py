@@ -1,6 +1,7 @@
 from .train import train, add_extra_features
 from .inverter import invert, weights_to_model_inputs, initialize
 from .utils import round_mol, draw_mol
+from .config import default_config_dict
 
 from types import SimpleNamespace
 import yaml
@@ -175,7 +176,10 @@ def random_hpo(device, output, model, config):
     return outconfig
 
 
-def to_SimpleNamespace(conf_dict):
+def to_SimpleNamespace(conf_dict, default=None):
+    
+    if default is not None:
+        conf_dict = {**default, **conf_dict}
 
     return SimpleNamespace(**{k:(to_SimpleNamespace(v) if type(v) is dict else v) for k,v in conf_dict.items()})
 
@@ -189,17 +193,19 @@ def from_SimpleNamespace(namespace):
 
     return conf_dict    
 
-def generate(n, output, config=None):
+def generate(n, output, config_file=None):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    if config is None:
-        config = str(Path(__file__).resolve().parents[1]) + "/config.yml"
-    
-    with open(config) as f:
-        config = yaml.load(f, Loader=yaml.FullLoader)
+    if config_file is None:
+        config_dict = {}
+    else:
+        with open(config_file) as f:
+            config_dict = yaml.load(f, Loader=yaml.FullLoader)
 
-    config = to_SimpleNamespace(config)
+    all_config_dict = {**default_config_dict, **config_dict}
+            
+    config = to_SimpleNamespace(all_config_dict)
 
     config.bonding = torch.tensor(config.bonding, device=device)
 
