@@ -363,7 +363,7 @@ def train(config, output):
                         epoch_scores_valid.append(scores_valid)
                         epoch_targets_valid.append(target_valid)
                     
-                    loss = criterion(scores_valid, torch.argmax(target_valid, dim=1))
+                    loss = criterion(scores_valid, target_valid)
 
                     if config.atom_class:
                         epoch_loss_valid[-1] += float(torch.mean(abs(epoch_scores_valid[-1] - epoch_targets_valid[-1])))
@@ -444,12 +444,13 @@ def train(config, output):
                     scores = torch.sum(scores.matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1)
                     
                     target = torch.sum(prepare_target_vector(data, config.max_size).matmul(torch.tensor(zinc_PARAMS, device=device)), dim=1)
+                    
+                    epoch_single_class_scores.append(single_class_scores)
                 else:
                     scores = model(*inputs)
                     target = data.y[:,config.property]
                 
                 epoch_scores.append(scores)
-                epoch_single_class_scores.append(single_class_scores)
                 epoch_targets.append(target)
                             
             if config.num_epochs == 0:
@@ -472,26 +473,36 @@ def train(config, output):
 
         plt.figure()
 
-        print("Missclassification statistics per class (fraction wrong):")
-
-        print(torch.sum(all_stats, dim=1)/class_sum)
-        
-        print("FINAL TRAIN ACCURACY", correct/total)
-
         train_targets = torch.cat(epoch_targets).cpu()
         train_scores = torch.cat(epoch_scores).cpu().detach().numpy()
         
         plt.plot(train_targets, train_scores, ".", alpha=0.1)
+
+        if config.atom_class:
+            
+            print("Missclassification statistics per class (fraction wrong):")
+
+            print(torch.sum(all_stats, dim=1)/class_sum)
         
-        print("FINAL TRAIN MAE", torch.mean(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))),
-              torch.mean(abs(torch.cat(epoch_targets) - torch.cat(epoch_single_class_scores))))
+            print("FINAL TRAIN ACCURACY", correct/total)
+        
+            print("FINAL TRAIN MAE", torch.mean(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))),
+                  torch.mean(abs(torch.cat(epoch_targets) - torch.cat(epoch_single_class_scores))))
 
-        print("FINAL TRAIN STDAE", torch.std(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))),
-              torch.std(abs(torch.cat(epoch_targets) - torch.cat(epoch_single_class_scores))))
+            print("FINAL TRAIN STDAE", torch.std(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))),
+                  torch.std(abs(torch.cat(epoch_targets) - torch.cat(epoch_single_class_scores))))
 
-        print("FINAL TRAIN maxAE", torch.max(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))),
-              torch.max(abs(torch.cat(epoch_targets) - torch.cat(epoch_single_class_scores))))
+            print("FINAL TRAIN maxAE", torch.max(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))),
+                  torch.max(abs(torch.cat(epoch_targets) - torch.cat(epoch_single_class_scores))))
 
+        else:    
+
+            print("FINAL TRAIN MAE", torch.mean(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))))
+            print("FINAL TRAIN STDAE", torch.std(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))))
+            print("FINAL TRAIN maxAE", torch.max(abs(torch.cat(epoch_targets) - torch.cat(epoch_scores))))
+
+            pickle.dump(all_stats, open(output+"/class_stats.pkl","wb"))
+            
         valid_targets = torch.cat(epoch_targets_valid).cpu()
         valid_scores = torch.cat(epoch_scores_valid).cpu().detach().numpy()
         
@@ -500,7 +511,6 @@ def train(config, output):
         print("FINAL VALID MAE", torch.mean(abs(torch.cat(epoch_targets_valid) - torch.cat(epoch_scores_valid))))
         
         pickle.dump((train_targets, train_scores, valid_targets, valid_scores), open(output+"/final_performance_data.pkl","wb"))
-        pickle.dump(all_stats, open(output+"/class_stats.pkl","wb"))
         
         ax = plt.gca()
         
