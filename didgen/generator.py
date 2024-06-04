@@ -193,14 +193,19 @@ def from_SimpleNamespace(namespace):
 
     return conf_dict    
 
-def generate(n, output, config_file=None):
+def generate(n, output, config=None, seed=None):
 
+    if seed is not None:
+        torch.manual_seed(seed)
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    if config_file is None:
+    if config is None:
         config_dict = {}
+    elif type(config) is dict:
+        config_dict = config
     else:
-        with open(config_file) as f:
+        with open(config) as f:
             config_dict = yaml.load(f, Loader=yaml.FullLoader)
 
     all_config_dict = {**default_config_dict, **config_dict}
@@ -238,7 +243,7 @@ def generate(n, output, config_file=None):
         
         yaml.dump(from_SimpleNamespace(config), open(output + "/config_optim.yml","w"))
 
-        
+    output_list = [] 
     i=0
     j=0
     while i < n and j < n*config.max_attempts:
@@ -304,9 +309,14 @@ def generate(n, output, config_file=None):
 
         print("Number of atoms of each type:")
         print(torch.sum(features,dim=0))
+
+        output_list.append({"features": atom_fea_ext, "adjacency": adj, "features_round": features, "adjacency_round": adj_round, "n_iter":n_iter_final, "smiles":smiles, "property":val[0].detach().tolist()})
         
         # Print value to file
         print(i, n_iter_final, smiles, " ".join(["%f"]*(len(val[0])))%tuple(val[0].detach().tolist()),file=f)
 
         i+=1
         j+=1
+
+    f.close()
+    return output_list

@@ -216,22 +216,23 @@ def train(config, output):
             criterion = nn.L1Loss()
 
         optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-        
-        # Initialize plot
-        plt.ion()
-        fig = plt.figure()
-        ax1 = fig.add_subplot(1,2,1)
-        ax2 = fig.add_subplot(1,2,2)
-        ax1.plot([],'b',label = 'Train')
-        ax1.plot([],'r',label = 'Validation')
-        if config.atom_class:
-            ax1.set_yscale("log")
-        ax1.set_xlabel('Epoch')
-        if config.atom_class:
-            ax1.set_ylabel('Cross Entropy')
-        else:
-            ax1.set_ylabel('MAE (eV)')
-        ax1.legend(loc=2)
+
+        if config.show_train:
+            # Initialize plot
+            plt.ion()
+            fig = plt.figure()
+            ax1 = fig.add_subplot(1,2,1)
+            ax2 = fig.add_subplot(1,2,2)
+            ax1.plot([],'b',label = 'Train')
+            ax1.plot([],'r',label = 'Validation')
+            if config.atom_class:
+                ax1.set_yscale("log")
+            ax1.set_xlabel('Epoch')
+            if config.atom_class:
+                ax1.set_ylabel('Cross Entropy')
+            else:
+                ax1.set_ylabel('MAE (eV)')
+            ax1.legend(loc=2)
         
         # Train Network
         epoch_loss_train = []
@@ -378,7 +379,7 @@ def train(config, output):
             else:
                 print(epoch, "AVG TRAIN MAE", float(epoch_loss_train[-1]), "AVG VALID MAE", float(epoch_loss_valid[-1]), flush=True)
             
-            if epoch%10 == 0:
+            if epoch%10 == 0 and config.show_train:
                 ax2.clear()
                 ax1.plot(epoch_loss_valid[:-1],'r',label = 'Validation')
                 ax1.plot(epoch_loss_train[1:],'b',label = 'Train')
@@ -393,9 +394,10 @@ def train(config, output):
         print("Total training time:", time.time() - training_time)
         
         torch.save(model.state_dict(), output+'/model_weights.pth')
-        
-        plt.ioff()
-        plt.savefig(output+"/progress.png", dpi=300)
+
+        if config.show_train:
+            plt.ioff()
+            plt.savefig(output+"/progress.png", dpi=300)
 
         model.eval()
         with torch.no_grad():
