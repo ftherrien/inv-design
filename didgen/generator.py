@@ -293,52 +293,16 @@ def generate(n, output, config_file=None):
         print("Final property value after rounding (adj_r):", model(atom_fea_ext, adj_r))
         print("Final property value after rounding (fea_r):", model(atom_fea_ext_r, adj))
         
-        print("ROUNDING DIFF")
-        print("FEA")
-        print(torch.max(abs(atom_fea_ext - atom_fea_ext_r)))
-        print("ADJ")
-        print(torch.max(abs(adj - adj_r)))
-
         if torch.sum(abs(val - torch.tensor([config.target], device=val.device))) > config.stop_loss:
             print("Target not actually reached!")
             continue
         
-        # print(abs(atom_fea_ext - atom_fea_ext_r))
-        # print(abs(adj - adj_r))
-        
         features, adj_round, smiles = draw_mol(atom_fea_ext, adj, config.type_list, output, index=i, embed=config.embed, text=" ".join(["%f"]*(len(val[0])))%tuple(val[0].detach().tolist()), color=(0,255,0))
         
-        # print("STARTING ATOM FEA")
-        # print(init_atom_fea_ext)
-        # print("STARTING ADJ")
-        # print(init_adj)
-        # print("FINAL ADJ VEC")
-        # print(adj_vec)
-        # print("FINAL ATOM FEA")
-        # print(atom_fea_ext)
-        # print("FINAL ADJ")
-        # print(adj)
-        print("ROUNDED FINAL ATOM FEA")
-        print(features)
-        print("ROUNDED FINAL ADJ")
-        print(adj_round)
-        
-        bonds_per_atom = torch.matmul(atom_fea_ext[0,:,:len(config.type_list)], config.bonding*1.0)
-        print("BONDS PER ATOM")
-        print(bonds_per_atom)
-        print("SUM ADJ")
-        print(torch.sum(adj, dim=1))
-        
-        print("Rounded BONDS PER ATOM")
-        print(r_bonds_per_atom)
-        print("Rounded SUM ADJ")
-        print(torch.sum(adj_round, dim=1))
-
-        print("Number of components (molecules) in generated graph:", n_comp)
         print("Generated Molecule SMILES:")
         print(smiles)
 
-        print("N atoms of each type:")
+        print("Number of atoms of each type:")
         print(torch.sum(features,dim=0))
         
         # Print value to file
