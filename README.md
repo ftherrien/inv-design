@@ -4,7 +4,7 @@ This is the repository for the paper: *Using GNN property predictors as molecule
 
 You can use DIDgen (**D**irect **I**nverse **D**esign **gen**erator) to generate diverse molecules with a specific property by *inverting* a GNN that predicts that property.
 
-<img src="https://github.com/ftherrien/inv-design/anim.gif" width="200" height="200">
+<img src="https://github.com/ftherrien/inv-design/blob/master/anim.gif" width="200" height="200">
 
 ## Install
 
@@ -51,7 +51,7 @@ This creates the same output directory as the cli. `out` is a list of python dic
 
 ### Parameters
 
-You can find a list of parameters and their description in [the documentation](https://github.com/ftherrien/inv-design/docs/parameters.md).
+You can find a list of parameters and their description in [the documentation](https://github.com/ftherrien/inv-design/blob/master/docs/parameters.md).
 
 ## Generate molecules online using Colab
 
