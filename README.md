@@ -1,6 +1,6 @@
 # Using GNN property predictors as molecule generators (DIDgen)
 
-This is the repository for the paper: *Using GNN property predictors as molecule generators*.
+This is the repository for the paper: [*Using GNN property predictors as molecule generators*](https://arxiv.org/abs/2406.03278).
 
 You can use DIDgen (**D**irect **I**nverse **D**esign **gen**erator) to generate diverse molecules with a specific property by *inverting* a GNN that predicts that property.
 
@@ -56,3 +56,16 @@ You can find a list of parameters and their description in [the documentation](h
 ## Generate molecules online using Colab
 
 [Train a GNN to predict the energy gap on a subset of QM9 and generate a molecule with an energy gap of 4.1 eV](https://colab.research.google.com/github/ftherrien/inv-design/blob/master/didgenerate.ipynb)
+
+## Citation
+
+```
+@misc{therrien2024using,
+      title={Using GNN property predictors as molecule generators}, 
+      author={Félix Therrien and Edward H. Sargent and Oleksandr Voznyy},
+      year={2024},
+      eprint={2406.03278},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
+```
