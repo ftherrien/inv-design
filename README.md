@@ -14,7 +14,7 @@ pip install git+https://github.com/ftherrien/inv-design
 
 ## Usage
 
-If you have trouble using or installing DIDgen please [create and issue](https://github.com/ftherrien/inv-design/issues/new) or [ask a question](https://github.com/ftherrien/inv-design/discussions/new?category=q-a). I will be happy to help! 
+If you have trouble using or installing DIDgen please [create an issue](https://github.com/ftherrien/inv-design/issues/new) or [ask a question](https://github.com/ftherrien/inv-design/discussions/new?category=q-a). I will be happy to help! 
 
 ### As a command-line interface (cli)
 
