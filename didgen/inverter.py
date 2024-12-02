@@ -329,7 +329,7 @@ def invert(model, fea_h, adj_vec, config, output):
         if torch.sum(abs(r_bonds_per_atom - torch.sum(r_adj, dim=1))) < 1e-12 and (true_loss < config.stop_loss or loss < 1e-6) and config.show_losses:
             print("Target reached! proportions:", proportions)
             
-        if torch.sum(abs(r_bonds_per_atom - torch.sum(r_adj, dim=1))) < 1e-12 and (true_loss < config.stop_loss or loss < 1e-6) and proportions < config.stop_prop: #crit:
+        if e > 0 and torch.sum(abs(r_bonds_per_atom - torch.sum(r_adj, dim=1))) < 1e-12 and (true_loss < config.stop_loss or loss < 1e-6) and proportions < config.stop_prop: #crit:
 
             # Number of components in graph
             L = torch.diag(torch.sum((r_adj != 0),axis=0)) - (r_adj != 0)*1
@@ -404,56 +404,58 @@ def invert(model, fea_h, adj_vec, config, output):
         # gradient descent or adam step
         optimizer.step()
 
-        adj_tmp = weights_to_model_inputs(fea_h, adj_vec, config, adj_only=True)
-
-        old_adj_sum = adj_sum
-        
-        adj_sum = torch.sum(adj_tmp, dim=1).squeeze()
-
-        if sum(adj_sum > 4.5) > 0:
+        if config.strictly_limit_bonds:
+                        
+            adj_tmp = weights_to_model_inputs(fea_h, adj_vec, config, adj_only=True)
             
-            N = config.max_size
+            old_adj_sum = adj_sum
             
-            tidx = torch.tril_indices(row=N, col=N, offset=-1)
+            adj_sum = torch.sum(adj_tmp, dim=1).squeeze()
             
-            adj_indices = -torch.ones((N,N), device=adj_vec.device, dtype=torch.long)
-            
-            adj_indices[tidx[0],tidx[1]] = torch.arange(adj_vec.shape[0])
-            
-            adj_indices[tidx[1],tidx[0]] = torch.arange(adj_vec.shape[0])
-
-            adj_diff = torch.round(adj_tmp - adj)
-            
-            adj_overflow = torch.round(adj_sum - 4)
-            
-            adj_culprits = torch.zeros(adj.shape)
-
-            # Less than 4 bonds ------------
-
-            adj_culprits[((adj_overflow.unsqueeze(1).expand(N,N).unsqueeze(0) > 0) & (adj_diff > 0))] = adj_diff[(adj_overflow.unsqueeze(1).expand(N,N).unsqueeze(0) > 0) & (adj_diff > 0)]
-            
-            sorted_culprits, indices_x = torch.sort(adj_culprits, dim=2)
-            
-            indices_y = torch.arange(N).unsqueeze(1).expand(N,N).unsqueeze(0)
-            
-            cumsum = torch.cumsum(sorted_culprits, dim=2)
-            
-            idx = indices_x[(cumsum < adj_overflow.unsqueeze(1).expand(N,N).unsqueeze(0) + sorted_culprits) & (cumsum > 0)]
-
-            idy = indices_y[(cumsum < adj_overflow.unsqueeze(1).expand(N,N).unsqueeze(0) + sorted_culprits) & (cumsum > 0)]
-            
-            id_dont_move = adj_indices[idy,idx]
-            
-            id_dont_move = torch.flatten(id_dont_move[id_dont_move != -1])
-
-            with torch.no_grad():
-            
-                adj_vec[id_dont_move] = adj_vec_before[id_dont_move] #+ 0.001*(adj_vec[id_dont_move] - adj_vec_before[id_dont_move])
-
+            if sum(adj_sum > 4.5) > 0:
                 
-        adj_tmp = weights_to_model_inputs(fea_h, adj_vec, config, adj_only=True)
-        
-        adj_sum = torch.sum(adj_tmp, dim=1).squeeze()
+                N = config.max_size
+                
+                tidx = torch.tril_indices(row=N, col=N, offset=-1)
+                
+                adj_indices = -torch.ones((N,N), device=adj_vec.device, dtype=torch.long)
+                
+                adj_indices[tidx[0],tidx[1]] = torch.arange(adj_vec.shape[0])
+                
+                adj_indices[tidx[1],tidx[0]] = torch.arange(adj_vec.shape[0])
+            
+                adj_diff = torch.round(adj_tmp - adj)
+                
+                adj_overflow = torch.round(adj_sum - 4)
+                
+                adj_culprits = torch.zeros(adj.shape)
+            
+                # Less than 4 bonds ------------
+            
+                adj_culprits[((adj_overflow.unsqueeze(1).expand(N,N).unsqueeze(0) > 0) & (adj_diff > 0))] = adj_diff[(adj_overflow.unsqueeze(1).expand(N,N).unsqueeze(0) > 0) & (adj_diff > 0)]
+                
+                sorted_culprits, indices_x = torch.sort(adj_culprits, dim=2)
+                
+                indices_y = torch.arange(N).unsqueeze(1).expand(N,N).unsqueeze(0)
+                
+                cumsum = torch.cumsum(sorted_culprits, dim=2)
+                
+                idx = indices_x[(cumsum < adj_overflow.unsqueeze(1).expand(N,N).unsqueeze(0) + sorted_culprits) & (cumsum > 0)]
+            
+                idy = indices_y[(cumsum < adj_overflow.unsqueeze(1).expand(N,N).unsqueeze(0) + sorted_culprits) & (cumsum > 0)]
+                
+                id_dont_move = adj_indices[idy,idx]
+                
+                id_dont_move = torch.flatten(id_dont_move[id_dont_move != -1])
+            
+                with torch.no_grad():
+                
+                    adj_vec[id_dont_move] = adj_vec_before[id_dont_move] #+ 0.001*(adj_vec[id_dont_move] - adj_vec_before[id_dont_move])
+            
+                    
+            adj_tmp = weights_to_model_inputs(fea_h, adj_vec, config, adj_only=True)
+            
+            adj_sum = torch.sum(adj_tmp, dim=1).squeeze()
                 
                 
         if e%10 == 0 and config.show_losses:

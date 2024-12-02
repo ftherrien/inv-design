@@ -53,4 +53,5 @@ default_config_dict = {'property': [4],
                        'bond_multiplier': 0.3,
                        'output_multiplier': 1,
                        'true_loss': True,
-                       'embed': True}
+                       'embed': True,
+                       'strictly_limit_bonds': True}
