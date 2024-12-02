@@ -1,3 +1,4 @@
+from .models.geom3d_models import Geom3D
 from .models.CGCNN import CrystalGraphConvNet as CGCNN
 from .models.simpleNet import SimpleNet
 from .models.CrippenNet import CrippenNet, zinc_PARAMS
@@ -155,6 +156,8 @@ def train(config, output):
                       atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, h_fea_len=128, n_out=len(config.property)).to(device)
     elif config.model == "CrippenNet":
         model = CrippenNet(config._extra_fea_matrix.shape[0], n_conv=config.n_conv, layer_list=config.layer_list, classifier=config.atom_class).to(device)
+    elif config.model == "GIN":
+        model = Geom3D(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1, config.n_conv, config.atom_fea_len, JK=config.JK, drop_ratio=config.dropout, gnn_type="GIN", graph_pooling=config.pooling, num_tasks=len(config.property))
     else:
         model = SimpleNet(config._extra_fea_matrix.shape[0] + config._extra_fea_matrix.shape[1] + 1, 
                           atom_fea_len=config.atom_fea_len, n_conv=config.n_conv, layer_list=config.layer_list, n_out=len(config.property),
