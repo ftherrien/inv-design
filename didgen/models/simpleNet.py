@@ -162,5 +162,7 @@ class SimpleNet(nn.Module):
             pooling_weights = self.nonlinear(self.pooling_weights(conv_fea).transpose(1,2)) # N0, N, F -> N0, 1, N
             
             mol_fea = pooling_weights.matmul(conv_fea).squeeze(dim=1) # pooling N0, N, F -> N0, F
-
+        else:
+            raise RuntimeError("Unknown pooling type: %s"%(self.pooling))
+            
         return self.deep(mol_fea)*self.multiplier
