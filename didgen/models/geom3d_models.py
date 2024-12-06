@@ -31,9 +31,7 @@ def propagate(self, x, adj, **kwargs):
     return self.update(before_agg.sum(-2), **kwargs)
 
 def custom_softmax(src, mask, dim=-1):
-    mask = mask.expand(src.shape)
-    out = src.exp() * mask**2 / (src.exp() * mask).sum(dim, keepdim=True)
-    out[mask == 0] = 0
+    out = src.exp() * mask / torch.maximum(torch.tensor(1),(src.exp() * mask).sum(dim, keepdim=True))
     return out
     
 class GINConv(MessagePassing):
@@ -83,9 +81,9 @@ class GCNConv(MessagePassing):
 
         adj_ones = adj.clone()
         adj_ones[adj_ones > 1] = 1
-
-        row = adj_ones.sum(-1, keepdim=True) + 1
-        col = adj_ones.sum(-2, keepdim=True) + 1
+        
+        row = abs(adj_ones.sum(-1, keepdim=True)) + 1 #abs() for noise around 0
+        col = abs(adj_ones.sum(-2, keepdim=True)) + 1
         
         norm = 1/torch.sqrt(row * col).unsqueeze(-1)
         
