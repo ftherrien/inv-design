@@ -66,8 +66,12 @@ class GCNConv(MessagePassing):
         return aggr_out
 
 class GATConv(MessagePassing):
-    def __init__(self, emb_dim, heads=2, negative_slope=0.2, aggr="add"):
+    def __init__(self, emb_dim, heads=2, negative_slope=0.2, aggr="add", seed=None):
         super(GATConv, self).__init__(node_dim=0)
+
+        if seed is not None:
+            torch.manual_seed(seed)
+        
         self.aggr = aggr
         self.heads = heads
         self.emb_dim = emb_dim
@@ -77,7 +81,7 @@ class GATConv(MessagePassing):
         self.att = nn.Parameter(torch.Tensor(1, heads, 2 * emb_dim))
 
         self.bias = nn.Parameter(torch.Tensor(emb_dim))
-        self.bond_encoder = nn.Embedding(full_bond_feature_dims[0], emb_dim)
+        self.bond_encoder = nn.Linear(1, heads * emb_dim, bias=False)
 
         self.reset_parameters()
 
@@ -100,7 +104,7 @@ class GATConv(MessagePassing):
         alpha = (torch.cat([x_i, x_j], dim=-1) * self.att).sum(dim=-1)
         alpha = F.leaky_relu(alpha, self.negative_slope)
         alpha = softmax(alpha, edge_index[0])
-
+        
         return x_j * alpha.view(-1, self.heads, 1)
         
     def update(self, aggr_out):
@@ -110,12 +114,15 @@ class GATConv(MessagePassing):
 
 
 class GraphSAGEConv(MessagePassing):
-    def __init__(self, emb_dim, aggr="mean"):
+    def __init__(self, emb_dim, aggr="mean", seed=None):
         super(GraphSAGEConv, self).__init__()
+
+        if seed is not None:
+            torch.manual_seed(seed)
 
         self.emb_dim = emb_dim
         self.linear = torch.nn.Sequential(torch.nn.Linear(emb_dim, emb_dim), torch.nn.BatchNorm1d(emb_dim), torch.nn.ReLU(), torch.nn.Linear(emb_dim, emb_dim))
-        self.bond_encoder = nn.Embedding(full_bond_feature_dims[0], emb_dim)
+        self.bond_encoder = nn.Linear(1, emb_dim, bias=False)
         self.aggr = aggr
 
 

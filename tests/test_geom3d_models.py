@@ -53,22 +53,61 @@ def test_GCNConv():
 
     assert (abs(out - out_orig) < 1e-5).all(), "Failed to match the original implementation with CH4"
 
+def test_GATConv():
+    from didgen.models.geom3d_models import GATConv
+    from didgen.models.originals.geom3d_models import GATConv as GATConv_orig
+
+    emb_dim = 10
+
+    conv = GATConv(emb_dim, seed=0)
+    conv_orig = GATConv_orig(emb_dim, seed=0)
+    fea_emb = nn.Linear(5, emb_dim)
+    
+    out = conv(fea_emb(x_N2), adj_N2)
+    out_orig = conv_orig(fea_emb(x_N2), edge_index_N2, edge_attr_N2)
+    
+    assert (abs(out - out_orig) < 1e-5).all(), "Failed to match the original implementation with N2"
+
+    out = conv(fea_emb(x_CH4), adj_CH4)
+    out_orig = conv_orig(fea_emb(x_CH4), edge_index_CH4, edge_attr_CH4)
+
+    assert (abs(out - out_orig) < 1e-5).all(), "Failed to match the original implementation with CH4"
+
+def test_GraphSAGEConv():
+    from didgen.models.geom3d_models import GraphSAGEConv
+    from didgen.models.originals.geom3d_models import GraphSAGEConv as GraphSAGEConv_orig
+
+    emb_dim = 10
+
+    conv = GraphSAGEConv(emb_dim, seed=0)
+    conv_orig = GraphSAGEConv_orig(emb_dim, seed=0)
+    fea_emb = nn.Linear(5, emb_dim)
+    
+    out = conv(fea_emb(x_N2), adj_N2)
+    out_orig = conv_orig(fea_emb(x_N2), edge_index_N2, edge_attr_N2)
+    
+    assert (abs(out - out_orig) < 1e-5).all(), "Failed to match the original implementation with N2"
+
+    out = conv(fea_emb(x_CH4), adj_CH4)
+    out_orig = conv_orig(fea_emb(x_CH4), edge_index_CH4, edge_attr_CH4)
+
+    assert (abs(out - out_orig) < 1e-5).all(), "Failed to match the original implementation with CH4"
+
 def test_Geom3D():
     from didgen.models.geom3d_models import Geom3D
 
     adj = torch.stack([adj_N2, adj_CH4])
     fea = torch.stack([x_N2, x_CH4])
-    
-    model = Geom3D(5, 3, 10, JK="last", drop_ratio=0, gnn_type="GIN", graph_pooling="mean", num_tasks=1)
-    out = model(fea, adj)
 
-    assert out.shape == (2, 1), "Failed to get the correct output shape with GIN"
-    
-    model = Geom3D(5, 3, 10, JK="last", drop_ratio=0, gnn_type="GCN", graph_pooling="mean", num_tasks=1)
-    out = model(fea, adj)
+    gnn_types = ["GIN", "GCN", "GAT", "GraphSAGE"]
 
-    assert out.shape == (2, 1), "Failed to get the correct output shape with GCN"
+    for gnn_type in gnn_types:
     
+        model = Geom3D(5, 3, 10, JK="last", drop_ratio=0, gnn_type= gnn_type, graph_pooling="mean", num_tasks=1)
+        out = model(fea, adj)
+
+        assert out.shape == (2, 1), f"Failed to get the correct output shape with {gnn_type}"
+        
 if __name__ == "__main__":
     test_GINConv()
     

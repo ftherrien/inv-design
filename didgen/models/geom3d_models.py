@@ -22,13 +22,19 @@ def propagate(self, x, adj, **kwargs):
     adj_ones[adj_ones > 1] = 1
     
     #adj_ones.matmul(x)
-
     #matmul = (adj.unsqueeze(-1) * x.unsqueeze(-3)).sum(-2)
 
-    before_agg = self.message(adj_ones.unsqueeze(-1) * x.unsqueeze(-3), **kwargs)
+    x_j = adj_ones.unsqueeze(-1) * x.unsqueeze(-3) # x_j-ish, includes edges
+    
+    before_agg = self.message(x_j, adj_ones=adj_ones, x_i=x.unsqueeze(-2).expand(x_j.shape) ,**kwargs)
     
     return self.update(before_agg.sum(-2), **kwargs)
-    
+
+def custom_softmax(src, mask, dim=-1):
+    mask = mask.expand(src.shape)
+    out = src.exp() * mask**2 / (src.exp() * mask).sum(dim, keepdim=True)
+    out[mask == 0] = 0
+    return out
     
 class GINConv(MessagePassing):
     def __init__(self, emb_dim, seed=None):
@@ -83,7 +89,7 @@ class GCNConv(MessagePassing):
         
         norm = 1/torch.sqrt(row * col).unsqueeze(-1)
         
-        return propagate(self, x, adj, edge_attr = edge_embedding, norm=norm) + F.relu(x + self.root_emb.weight) / row
+        return propagate(self, x, adj, edge_attr=edge_embedding, norm=norm) + F.relu(x + self.root_emb.weight) / row
 
     def message(self, x_j, edge_attr, norm, **kwargs):
         return norm * F.relu(x_j + edge_attr)
@@ -92,18 +98,22 @@ class GCNConv(MessagePassing):
         return aggr_out
 
 class GATConv(MessagePassing):
-    def __init__(self, emb_dim, heads=2, negative_slope=0.2, aggr="add"):
+    def __init__(self, emb_dim, heads=2, negative_slope=0.2, aggr="add", seed=None):
         super(GATConv, self).__init__(node_dim=0)
+
+        if seed is not None:
+            torch.manual_seed(seed)
+        
         self.aggr = aggr
         self.heads = heads
         self.emb_dim = emb_dim
         self.negative_slope = negative_slope
 
         self.weight_linear = nn.Linear(emb_dim, heads * emb_dim)
-        self.att = nn.Parameter(torch.Tensor(1, heads, 2 * emb_dim))
+        self.att = nn.Parameter(torch.Tensor(heads, 2 * emb_dim))
 
         self.bias = nn.Parameter(torch.Tensor(emb_dim))
-        self.bond_encoder = nn.Embedding(full_bond_feature_dims[0], emb_dim)
+        self.bond_encoder = nn.Linear(1, heads * emb_dim, bias=False)
 
         self.reset_parameters()
 
@@ -111,29 +121,53 @@ class GATConv(MessagePassing):
         glorot(self.att)
         zeros(self.bias)
 
-    def forward(self, x, edge_index, edge_attr):
-        edge_embedding = self.bond_encoder(edge_attr)
+    def forward(self, x, adj):
+        edge_embedding = self.bond_encoder(adj.unsqueeze(-1))
 
         x = self.weight_linear(x)
-        return self.propagate(edge_index, x=x, edge_attr=edge_embedding)
+        return propagate(self, x, adj, edge_attr=edge_embedding)
 
-    def message(self, edge_index, x_i, x_j, edge_attr):
-        x_i = x_i.view(-1, self.heads, self.emb_dim)
-        x_j = x_j.view(-1, self.heads, self.emb_dim)
-        edge_attr = edge_attr.view(-1, self.heads, self.emb_dim)
+    def message(self, x_j, x_i, adj_ones, edge_attr):
+        x_i = x_i.view(*x_i.shape[:-1], self.heads, self.emb_dim)
+        x_j = x_j.view(*x_j.shape[:-1], self.heads, self.emb_dim)
+        edge_attr = edge_attr.view(*edge_attr.shape[:-1], self.heads, self.emb_dim)
         x_j += edge_attr
 
-        alpha = (torch.cat([x_i, x_j], dim=-1) * self.att).sum(dim=-1)
+        alpha = (torch.cat([x_i, x_j], dim=-1) * self.att.view(*(1,)*(len(x_j.shape)-2), *self.att.shape)).sum(dim=-1)
         alpha = F.leaky_relu(alpha, self.negative_slope)
-        alpha = softmax(alpha, edge_index[0])
+        alpha = custom_softmax(alpha, adj_ones.unsqueeze(-1), dim=-3)
 
-        return x_j * alpha.view(-1, self.heads, 1)
+        return (x_j * alpha.unsqueeze(-1)).movedim(-2,-3)
         
-    def update(self, aggr_out):
-        aggr_out = aggr_out.mean(dim=1)
+    def update(self, aggr_out, **kwargs):
+        aggr_out = aggr_out.mean(dim=-2)
         aggr_out += self.bias
         return aggr_out
 
+class GraphSAGEConv(MessagePassing):
+    def __init__(self, emb_dim, aggr="mean", seed=None):
+        super(GraphSAGEConv, self).__init__()
+
+        if seed is not None:
+            torch.manual_seed(seed)
+        
+        self.emb_dim = emb_dim
+        self.linear = torch.nn.Sequential(torch.nn.Linear(emb_dim, emb_dim), permutedBatchNorm1d(emb_dim), torch.nn.ReLU(), torch.nn.Linear(emb_dim, emb_dim))
+        self.bond_encoder = nn.Linear(1, emb_dim, bias=False)
+        self.aggr = aggr
+
+    def forward(self, x, adj):
+        x = self.linear(x)
+        edge_embedding = self.bond_encoder(adj.unsqueeze(-1))
+
+        return propagate(self, x, adj, edge_attr=edge_embedding)
+
+    def message(self, x_j, edge_attr, **kwargs):
+        return x_j + edge_attr
+
+    def update(self, aggr_out, **kwargs):
+        return F.normalize(aggr_out, p=2, dim=-1)  
+    
 class GNN(nn.Module):
     def __init__(self, orig_emb_dim, num_layer, emb_dim, JK="last", drop_ratio=0, gnn_type="GIN"):
         super(GNN, self).__init__()
