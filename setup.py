@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name='didgen',
-      version='0.0.0',
+      version='1.0.0',
       description='Generate molecules with requested properties',
       url='https://github.com/ftherrien/inv-design',
       author='Felix Therrien',
