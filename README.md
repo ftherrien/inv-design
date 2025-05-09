@@ -1,6 +1,6 @@
 # Using GNN property predictors as molecule generators (DIDgen)
 
-This is the repository for the paper: [*Using GNN property predictors as molecule generators*](https://arxiv.org/abs/2406.03278).
+This is the repository for the paper: [*Using GNN property predictors as molecule generators*](https://doi.org/10.1038/s41467-025-59439-1).
 
 You can use DIDgen (**D**irect **I**nverse **D**esign **gen**erator) to generate diverse molecules with a specific property by *inverting* a GNN that predicts that property.
 
@@ -60,12 +60,18 @@ You can find a list of parameters and their description in [the documentation](h
 ## Citation
 
 ```
-@misc{therrien2024using,
-      title={Using GNN property predictors as molecule generators}, 
-      author={Félix Therrien and Edward H. Sargent and Oleksandr Voznyy},
-      year={2024},
-      eprint={2406.03278},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG}
+﻿@Article{Therrien2025,
+author={Therrien, F{\'e}lix and Sargent, Edward H. and Voznyy, Oleksandr},
+title={Using GNN property predictors as molecule generators},
+journal={Nature Communications},
+year={2025},
+month={May},
+day={08},
+volume={16},
+number={1},
+pages={4301},
+issn={2041-1723},
+doi={10.1038/s41467-025-59439-1},
+url={https://doi.org/10.1038/s41467-025-59439-1}
 }
 ```
