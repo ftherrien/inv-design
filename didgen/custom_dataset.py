@@ -1,5 +1,4 @@
 import os
-import os.path as osp
 import sys
 from typing import Callable, List, Optional
 
@@ -15,9 +14,6 @@ from torch_geometric.data import (
 from torch_geometric.utils import one_hot, scatter
 
 import pickle
-
-HAR2EV = 27.211386246
-KCALMOL2EV = 0.04336414
 
 atomrefs = {
     6: [0., 0., 0., 0., 0.],
@@ -40,102 +36,51 @@ atomrefs = {
     11: [0., 0., 0., 0., 0.],
 }
 
+
 class QM9like(InMemoryDataset):
-    r"""The QM9 dataset from the `"MoleculeNet: A Benchmark for Molecular
-    Machine Learning" <https://arxiv.org/abs/1703.00564>`_ paper, consisting of
-    about 130,000 molecules with 19 regression targets.
-    Each molecule includes complete spatial information for the single low
-    energy conformation of the atoms in the molecule.
-    In addition, we provide the atom features from the `"Neural Message
-    Passing for Quantum Chemistry" <https://arxiv.org/abs/1704.01212>`_ paper.
+    r"""
+        A dataset class to process datasets in the same way it is processed for QM9
+        in torch_geometric.
 
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | Target | Property                         | Description                                                                       | Unit                                        |
-    +========+==================================+===================================================================================+=============================================+
-    | 0      | :math:`\mu`                      | Dipole moment                                                                     | :math:`\textrm{D}`                          |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 1      | :math:`\alpha`                   | Isotropic polarizability                                                          | :math:`{a_0}^3`                             |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 2      | :math:`\epsilon_{\textrm{HOMO}}` | Highest occupied molecular orbital energy                                         | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 3      | :math:`\epsilon_{\textrm{LUMO}}` | Lowest unoccupied molecular orbital energy                                        | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 4      | :math:`\Delta \epsilon`          | Gap between :math:`\epsilon_{\textrm{HOMO}}` and :math:`\epsilon_{\textrm{LUMO}}` | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 5      | :math:`\langle R^2 \rangle`      | Electronic spatial extent                                                         | :math:`{a_0}^2`                             |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 6      | :math:`\textrm{ZPVE}`            | Zero point vibrational energy                                                     | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 7      | :math:`U_0`                      | Internal energy at 0K                                                             | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 8      | :math:`U`                        | Internal energy at 298.15K                                                        | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 9      | :math:`H`                        | Enthalpy at 298.15K                                                               | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 10     | :math:`G`                        | Free energy at 298.15K                                                            | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 11     | :math:`c_{\textrm{v}}`           | Heat capavity at 298.15K                                                          | :math:`\frac{\textrm{cal}}{\textrm{mol K}}` |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 12     | :math:`U_0^{\textrm{ATOM}}`      | Atomization energy at 0K                                                          | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 13     | :math:`U^{\textrm{ATOM}}`        | Atomization energy at 298.15K                                                     | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 14     | :math:`H^{\textrm{ATOM}}`        | Atomization enthalpy at 298.15K                                                   | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 15     | :math:`G^{\textrm{ATOM}}`        | Atomization free energy at 298.15K                                                | :math:`\textrm{eV}`                         |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 16     | :math:`A`                        | Rotational constant                                                               | :math:`\textrm{GHz}`                        |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 17     | :math:`B`                        | Rotational constant                                                               | :math:`\textrm{GHz}`                        |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
-    | 18     | :math:`C`                        | Rotational constant                                                               | :math:`\textrm{GHz}`                        |
-    +--------+----------------------------------+-----------------------------------------------------------------------------------+---------------------------------------------+
+        Args:
 
-    .. note::
-
-        We also provide a pre-processed version of the dataset in case
-        :class:`rdkit` is not installed. The pre-processed version matches with
-        the manually processed version as outlined in :meth:`process`.
-
-    Args:
-        root (str): Root directory where the dataset should be saved.
-        transform (callable, optional): A function/transform that takes in an
-            :obj:`torch_geometric.data.Data` object and returns a transformed
-            version. The data object will be transformed before every access.
-            (default: :obj:`None`)
-        pre_transform (callable, optional): A function/transform that takes in
-            an :obj:`torch_geometric.data.Data` object and returns a
-            transformed version. The data object will be transformed before
-            being saved to disk. (default: :obj:`None`)
-        pre_filter (callable, optional): A function that takes in an
-            :obj:`torch_geometric.data.Data` object and returns a boolean
-            value, indicating whether the data object should be included in the
-            final dataset. (default: :obj:`None`)
-
-    **STATS:**
-
-    .. list-table::
-        :widths: 10 10 10 10 10
-        :header-rows: 1
-
-        * - #graphs
-          - #nodes
-          - #edges
-          - #features
-          - #tasks
-        * - 130,831
-          - ~18.0
-          - ~37.3
-          - 11
-          - 19
-    """  # noqa: E501
+                root (str): Root directory where the dataset should be saved.
+                transform (callable, optional): A function/transform that takes in an
+                :obj:`torch_geometric.data.Data` object and returns a transformed
+                version. The data object will be transformed before every access.
+                (default: :obj:`None`)
+                pre_transform (callable, optional): A function/transform that takes in
+                an :obj:`torch_geometric.data.Data` object and returns a
+                transformed version. The data object will be transformed before
+                being saved to disk. (default: :obj:`None`)
+                pre_filter (callable, optional): A function that takes in an
+                :obj:`torch_geometric.data.Data` object and returns a boolean
+                value, indicating whether the data object should be included in the
+                final dataset. (default: :obj:`None`)
+                raw_name (str, optional): The name of the raw data file to be processed.
+                    (default: 'data')
+                type_list (list, optional): A list of elements that sets the order of
+                the onehot encoding.
+                (default: ['H', 'C', 'N', 'O', 'F'])
+                return_type_list (bool, optional): If True, the dataset will return a
+                dictionary with the types and their corresponding indices and bond
+                types. Useful if you want to know possible valances in a dataset.
+                If False, it will return a list of indices.
+                (default: False)
+                atom_class (bool, optional): If True, the dataset will return an
+                additional attribute `atom_class` which is a one-hot encoding of the
+                atom classes. This is useful for datasets that have atom classes
+                (default: False)
+        Returns:
+                :class:`torch_geometric.data.InMemoryDataset`: The processed dataset.
+    """
 
     raw_url = ""
     raw_url2 = ""
     processed_url = ""
 
     default_type_list = ['H', 'C', 'N', 'O', 'F']
-    
+
     def __init__(self, root: str, transform: Optional[Callable] = None,
                  pre_transform: Optional[Callable] = None,
                  pre_filter: Optional[Callable] = None, raw_name="data", type_list = default_type_list, return_type_list=False, atom_class=False):
@@ -165,12 +110,12 @@ class QM9like(InMemoryDataset):
             out[torch.tensor([1, 6, 7, 8, 9])] = torch.tensor(atomrefs[target])
             return out.view(-1, 1)
         return None
-    
+
     @property
     def raw_file_names(self) -> List[str]:
         import rdkit  # noqa
-        return [self.raw_name + '.sdf', self.raw_name + '.csv', self.raw_name + '.pkl']
-        
+        return [self.raw_name + '.sdf', self.raw_name + '.csv']
+
     @property
     def processed_file_names(self) -> str:
         return 'data_v3.pt'
@@ -201,7 +146,7 @@ class QM9like(InMemoryDataset):
         if rdkit is None:
             print(("Using a pre-processed version of the dataset. Please "
                    "install 'rdkit' to alternatively process the raw data."),
-                  file=sys.stderr)
+                  file=sys.stderr)\
 
             data_list = torch.load(self.raw_paths[0])
             data_list = [Data(**data_dict) for data_dict in data_list]
@@ -219,15 +164,14 @@ class QM9like(InMemoryDataset):
 
         with open(self.raw_paths[1], 'r') as f:
             target = f.read().split('\n')[1:-1]
-            target = [[float(x) for x in line.split(',')[1:20]]
+            target = [[float(x) for x in line.split(',')[1:]]
                       for line in target]
             target = torch.tensor(target, dtype=torch.float)
             target = torch.cat([target[:, 3:], target[:, :3]], dim=-1)
 
-            
         if self.atom_class:
             atom_classes = pickle.load(open(self.raw_paths[2], "rb"))
-            
+
         suppl = Chem.SDMolSupplier(self.raw_paths[0], removeHs=False,
                                    sanitize=False)
 
@@ -241,7 +185,7 @@ class QM9like(InMemoryDataset):
                             self.types[symb][1].append(nb)
                     else:
                         self.types[symb] = [len(self.types), [nb]]
-        
+
         data_list = []
         for i, mol in enumerate(tqdm(suppl)):
 
@@ -261,9 +205,9 @@ class QM9like(InMemoryDataset):
             for atom in mol.GetAtoms():
                 if self.return_type_list:
                     type_idx.append(self.types[atom.GetSymbol()][0])
-                else:   
+                else:
                     type_idx.append(self.types.index(atom.GetSymbol()))
-                    
+
                 atomic_number.append(atom.GetAtomicNum())
                 aromatic.append(1 if atom.GetIsAromatic() else 0)
                 hybridization = atom.GetHybridization()
@@ -292,24 +236,24 @@ class QM9like(InMemoryDataset):
             row, col = edge_index
             hs = (z == 1).to(torch.float)
             num_hs = scatter(hs[row], col, dim_size=N, reduce='sum').tolist()
-            
+
             x1 = one_hot(torch.tensor(type_idx), num_classes=len(self.types))
             x2 = torch.tensor([atomic_number, aromatic, sp, sp2, sp3, num_hs],
                               dtype=torch.float).t().contiguous()
-            
+
             x = torch.cat([x1, x2], dim=-1)
 
             y = target[i].unsqueeze(0)
 
             name = mol.GetProp('_Name')
-            
+
             if self.atom_class:
                 atom_class = one_hot(torch.tensor(atom_classes[i]), num_classes=69)
 
                 data = Data(x=x, z=z, pos=pos, edge_index=edge_index,
                             edge_attr=edge_attr, y=y, name=name, idx=i, atom_class=atom_class)
             else:
-                
+
                 data = Data(x=x, z=z, pos=pos, edge_index=edge_index,
                             edge_attr=edge_attr, y=y, name=name, idx=i)
 
