@@ -220,10 +220,6 @@ def initialize(config, output, i, device="cpu"):
         
         fea_h, adj_vec = start_from(dataset[qmid].to(device), config)
 
-        mask = (adj_vec == 0)
-        mask_mask = (torch.rand(mask.shape) > 0.15).to(device)
-        config.adj_mask = ~(mask * mask_mask)
-        
         # nudge
 
         N = config.max_size
