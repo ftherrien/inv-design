@@ -221,7 +221,7 @@ def initialize(config, output, i, device="cpu"):
         fea_h, adj_vec = start_from(dataset[qmid].to(device), config)
 
         mask = (adj_vec == 0)
-        mask_mask = (torch.rand(mask.shape) > 0.15)
+        mask_mask = (torch.rand(mask.shape) > 0.15).to(device)
         config.adj_mask = ~(mask * mask_mask)
         
         # nudge
@@ -420,15 +420,15 @@ def invert(model, fea_h, adj_vec, config, output):
                 
                 adj_indices = -torch.ones((N,N), device=adj_vec.device, dtype=torch.long)
                 
-                adj_indices[tidx[0],tidx[1]] = torch.arange(adj_vec.shape[0])
+                adj_indices[tidx[0],tidx[1]] = torch.arange(adj_vec.shape[0], device=adj_vec.device)
                 
-                adj_indices[tidx[1],tidx[0]] = torch.arange(adj_vec.shape[0])
+                adj_indices[tidx[1],tidx[0]] = torch.arange(adj_vec.shape[0], device=adj_vec.device)
             
                 adj_diff = torch.round(adj_tmp - adj)
                 
                 adj_overflow = torch.round(adj_sum - 4)
                 
-                adj_culprits = torch.zeros(adj.shape)
+                adj_culprits = torch.zeros(adj.shape, device=adj_vec.device)
             
                 # Less than 4 bonds ------------
             
@@ -436,7 +436,7 @@ def invert(model, fea_h, adj_vec, config, output):
                 
                 sorted_culprits, indices_x = torch.sort(adj_culprits, dim=2)
                 
-                indices_y = torch.arange(N).unsqueeze(1).expand(N,N).unsqueeze(0)
+                indices_y = torch.arange(N, device=adj_vec.device).unsqueeze(1).expand(N,N).unsqueeze(0)
                 
                 cumsum = torch.cumsum(sorted_culprits, dim=2)
                 
